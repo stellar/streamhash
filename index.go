@@ -39,8 +39,12 @@ type Index struct {
 	// Variable-length data from file
 	userMetadata []byte
 
-	// RAM index for block lookup
-	ramIndex []ramIndexEntry
+	// RAM index — entries are decoded on demand from this mmap-backed
+	// byte view via ramEntry(). Keeping it as []byte avoids the
+	// per-Open allocation + decode loop a Go-heap []ramIndexEntry
+	// would require, which scales linearly with NumBlocks.
+	ramIndexBytes []byte
+	numRAMEntries uint32
 
 	// Separated layout region offsets (computed from header)
 	payloadRegionOffset  uint64
@@ -123,9 +127,11 @@ func OpenBytes(data []byte) (*Index, error) {
 	return idx, nil
 }
 
-// initFromData parses header, variable sections, and RAM index from idx.data.
-// Footer decoding is deferred to Verify() — Open() only touches the
-// contiguous prefix (header + variable sections + RAM index).
+// initFromData parses the header and locates the variable-length
+// sections and RAM index inside idx.data. Open() only touches the
+// contiguous prefix (header + variable sections + RAM-index span);
+// individual RAM index entries are decoded on demand via ramEntry(),
+// and footer decoding is deferred to Verify().
 func (idx *Index) initFromData() error {
 	fileSize := uint64(len(idx.data))
 
@@ -165,9 +171,9 @@ func (idx *Index) initFromData() error {
 	offset += uint64(algoConfigLen)
 
 	// Calculate RAM index position (after variable sections)
-	numRAMEntries := hdr.NumBlocks + 1 // includes sentinel
+	idx.numRAMEntries = hdr.NumBlocks + 1 // includes sentinel
 	ramIndexStart := offset
-	ramIndexSize := uint64(numRAMEntries) * uint64(ramIndexEntrySize)
+	ramIndexSize := uint64(idx.numRAMEntries) * uint64(ramIndexEntrySize)
 	ramIndexEnd := ramIndexStart + ramIndexSize
 
 	// fileSize >= minFileSize > footerSize, so no underflow.
@@ -175,12 +181,9 @@ func (idx *Index) initFromData() error {
 		return sherr.ErrCorruptedIndex
 	}
 
-	// Load RAM index
-	idx.ramIndex = make([]ramIndexEntry, numRAMEntries)
-	for i := range numRAMEntries {
-		entryOffset := ramIndexStart + uint64(i)*uint64(ramIndexEntrySize)
-		idx.ramIndex[i] = decodeRAMIndexEntry(idx.data[entryOffset : entryOffset+uint64(ramIndexEntrySize)])
-	}
+	// RAM index — keep the mmap'd region as a byte view; ramEntry()
+	// decodes individual entries on demand. See the field doc on Index.
+	idx.ramIndexBytes = idx.data[ramIndexStart:ramIndexEnd]
 
 	idx.entrySize = hdr.entrySize()
 
@@ -196,6 +199,16 @@ func (idx *Index) initFromData() error {
 	}
 
 	return nil
+}
+
+// ramEntry decodes RAM index entry i from the mmap'd byte view.
+// decodeRAMIndexEntry reads exactly ramIndexEntrySize bytes from the
+// start of the slice and does a per-byte little-endian unpack, so the
+// open-ended slice expression is safe and incurs only one bounds
+// check (avoiding the 3-index form keeps this method small enough to
+// inline alongside the inlined decoder).
+func (idx *Index) ramEntry(i uint32) ramIndexEntry {
+	return decodeRAMIndexEntry(idx.ramIndexBytes[uint64(i)*ramIndexEntrySize:])
 }
 
 // Close closes the index and releases resources.
@@ -257,13 +270,14 @@ func (idx *Index) queryInternal(key []byte) (uint64, error) {
 	prefix := bits.ReverseBytes64(k0) // Big-endian for monotonic routing
 	blockIdx := intbits.FastRange32(prefix, idx.header.NumBlocks)
 
-	if int(blockIdx) >= len(idx.ramIndex)-1 {
+	if blockIdx+1 >= idx.numRAMEntries {
 		return 0, sherr.ErrNotFound
 	}
 
-	// Step 2: Get block info from RAM index
-	entry := idx.ramIndex[blockIdx]
-	nextEntry := idx.ramIndex[blockIdx+1]
+	// Step 2: Get block info from RAM index (on-demand decode from
+	// mmap'd bytes — see ramEntry).
+	entry := idx.ramEntry(blockIdx)
+	nextEntry := idx.ramEntry(blockIdx + 1)
 	baseRank := entry.KeysBefore
 	keysInBlock := int(nextEntry.KeysBefore - entry.KeysBefore)
 
@@ -474,15 +488,15 @@ func (idx *Index) Verify() error {
 		return err
 	}
 
-	numBlocks := int(idx.header.NumBlocks)
+	numBlocks := idx.header.NumBlocks
 
 	// Verify payload region hash using hash-of-hashes
 	// This matches the build-time computation: fold per-block hashes in order
 	payloadHasher := xxhash.New()
 	for blockID := range numBlocks {
 		// Get this block's payload range from RAM index
-		startKey := idx.ramIndex[blockID].KeysBefore
-		endKey := idx.ramIndex[blockID+1].KeysBefore
+		startKey := idx.ramEntry(blockID).KeysBefore
+		endKey := idx.ramEntry(blockID + 1).KeysBefore
 		if startKey > endKey {
 			return sherr.ErrCorruptedIndex
 		}
