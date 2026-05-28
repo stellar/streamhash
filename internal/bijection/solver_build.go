@@ -98,6 +98,13 @@ func (bb *Builder) solveSplitBucket(bucketIdx int, bucket []bucketEntry) (uint32
 	}
 
 	if !foundSeed0 {
+		// A duplicate key (identical mixParts) in the first half can never be
+		// split into distinct slots, so the search above exhausts. Distinguish
+		// that genuine duplicate from a true seed-search exhaustion; the
+		// second-half case is already reported via solveExtended below.
+		if hasDuplicateMixParts(bucket) {
+			return 0, 0, sherr.ErrDuplicateKey
+		}
 		return 0, 0, sherr.ErrSplitBucketSeedSearchFailed
 	}
 
@@ -114,12 +121,17 @@ func (bb *Builder) solveSplitBucket(bucketIdx int, bucket []bucketEntry) (uint32
 
 	var seed1 uint32
 
-	if len(bb.subBucket1) >= 2 {
-		var needsFallback bool
-		seed1, needsFallback = bb.solveDirectBucket(bb.subBucket1, len(bb.subBucket1))
-		if needsFallback || len(bb.subBucket1) > 8 {
+	if size1 := len(bb.subBucket1); size1 >= 2 {
+		// Golomb-Rice can't encode seeds for sub-buckets larger than 8, so for
+		// those skip the direct search (its result would be discarded) and go
+		// straight to the extended seed search + fallback list.
+		needsFallback := size1 > 8
+		if !needsFallback {
+			seed1, needsFallback = bb.solveDirectBucket(bb.subBucket1, size1)
+		}
+		if needsFallback {
 			var err error
-			seed1, err = bb.solveExtended(bb.subBucket1, len(bb.subBucket1))
+			seed1, err = bb.solveExtended(bb.subBucket1, size1)
 			if err != nil {
 				return 0, 0, err
 			}
@@ -206,18 +218,29 @@ func (bb *Builder) solveExtended(bucket []bucketEntry, size int) (uint32, error)
 
 	// Equal mixParts implies equal keys (XOR with globalSeed is bijective),
 	// which means every seed produces a collision for that pair.
-	for i := 0; i < size-1; i++ {
-		for j := i + 1; j < size; j++ {
-			if bucket[i].mixParts == bucket[j].mixParts {
-				return 0, sherr.ErrDuplicateKey
-			}
-		}
+	if hasDuplicateMixParts(bucket[:size]) {
+		return 0, sherr.ErrDuplicateKey
 	}
 
 	if size <= 64 {
 		return bb.solveExtendedBitmask(bucket, size)
 	}
 	return bb.solveExtendedArray(bucket, size)
+}
+
+// hasDuplicateMixParts reports whether any two entries share identical mixParts.
+// Equal mixParts implies equal keys (XOR with globalSeed is bijective), so no
+// seed can ever separate them — such a pair is a duplicate key. O(n²), used
+// only on already-failed seed-search paths.
+func hasDuplicateMixParts(bucket []bucketEntry) bool {
+	for i := 0; i < len(bucket)-1; i++ {
+		for j := i + 1; j < len(bucket); j++ {
+			if bucket[i].mixParts == bucket[j].mixParts {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (bb *Builder) solveExtendedBitmask(bucket []bucketEntry, size int) (uint32, error) {

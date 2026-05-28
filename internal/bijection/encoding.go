@@ -168,7 +168,7 @@ func eliasFanoSize(n, U int) int {
 //   - Remainder r = v & ((1 << k) - 1) (encoded in k bits)
 
 func golombParameter(bucketSize int) uint8 {
-	if bucketSize < 8 {
+	if bucketSize < len(golombParameterTable) {
 		return golombParameterTable[bucketSize]
 	}
 	return 8
@@ -248,10 +248,11 @@ func encodeFallbackListIntoWithB(entries []fallbackEntry, blockBits uint32, buf 
 	b[0] = count
 
 	// Compact entry packs three fields into 32 bits (little-endian):
-	//   bits [0, seedBits)          = seed
-	//   bit  [seedBits]             = subBucket (0 or 1)
-	//   bits [seedBits+1, 31)       = bucketIndex
-	// seedBits = 31 - blockBits, so the three fields always sum to 31 bits.
+	//   bits [0, seedBits)        = seed
+	//   bit  [seedBits]           = subBucket (0 or 1)
+	//   bits [seedBits+1, 32)     = bucketIndex
+	// seedBits = 31 - blockBits, so seed (seedBits) + subBucket (1) +
+	// bucketIndex (blockBits) = 32 bits.
 	seedBits := 31 - blockBits
 
 	for i, e := range entries {

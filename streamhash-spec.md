@@ -496,12 +496,11 @@ where:
 | 4 | 2 | Version | uint16_le | `0x0001` |
 | 6 | 8 | TotalKeys | uint64_le | Total number of keys (N) |
 | 14 | 4 | NumBlocks | uint32_le | Number of blocks |
-| 18 | 4 | RAMBits | uint32_le | R = ceil(log2(NumBlocks)) |
-| 22 | 4 | PayloadSize | uint32_le | Payload bytes per key (0 = MPHF only) |
-| 26 | 1 | FingerprintSize | uint8 | Fingerprint bytes (0-4) |
-| 27 | 8 | Seed | uint64_le | Global seed for hash functions |
-| 35 | 2 | BlockAlgorithm | uint16_le | 0=Bijection, 1=PTRHash |
-| 37 | 27 | Reserved | bytes | Zero-filled |
+| 18 | 4 | PayloadSize | uint32_le | Payload bytes per key (0 = MPHF only) |
+| 22 | 1 | FingerprintSize | uint8 | Fingerprint bytes (0-4) |
+| 23 | 8 | Seed | uint64_le | Global seed for hash functions |
+| 31 | 2 | BlockAlgorithm | uint16_le | 0=Bijection, 1=PTRHash |
+| 33 | 31 | Reserved | bytes | Zero-filled |
 
 **Note:** `TotalBuckets`, `BucketsPerBlock`, and `PrefixBits` are **not in the header**. These are algorithm-internal constants. Each algorithm derives bucket counts from `NumBlocks` using its own `lambda` and `bucketsPerBlock`.
 
@@ -526,10 +525,10 @@ Algorithm-specific configuration. Currently zero-length for both Bijection and P
 ```
 Offset  Hex bytes                                       Description
 ──────────────────────────────────────────────────────────────────────
-0000    48 4D 54 53 01 00 05 00 00 00 00 00 00 00      Header: Magic 0x53544D48 ("STMH" as LE uint32 — bytes read as "HMTS"), Version 1
-0010    02 00 00 00 01 00 00 00 00 00 12 34 56 78      NumBlocks=2, RAMBits=1, PayloadSize=0
-0020    9A BC DE F0 00 00 00 00 00 00 00 00 00 00      FingerprintSize=0, Seed=0x..., BlockAlgorithm=0
-0030    00 00 00 00 00 00 00 00 00 00 00 00 00 00      Reserved (zeros)
+0000    48 4D 54 53 01 00 05 00 00 00 00 00 00 00 02 00   Magic 0x53544D48 ("STMH" as LE uint32), Version 1, TotalKeys=5, NumBlocks=2 (low bytes)
+0010    00 00 00 00 00 00 00 12 34 56 78 9A BC DE F0 00   NumBlocks=2 (high bytes), PayloadSize=0, FingerprintSize=0, Seed=0xF0DEBC9A78563412, BlockAlgorithm=0 (low byte)
+0020    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   BlockAlgorithm=0 (high byte), Reserved (zeros)
+0030    00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   Reserved (zeros)
 0040    00 00 00 00                                    UserMetadataLen = 0 (no user metadata)
 0044    00 00 00 00                                    AlgoConfigLen = 0 (no algo config)
 0048    00 00 00 00 00 00 00 00 00 00                 RAM Index entry 0: KeysBefore=0, MetadataOffset=0

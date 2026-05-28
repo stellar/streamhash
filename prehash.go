@@ -58,10 +58,8 @@ import (
 //
 //	rank, err := idx.QueryRank(streamhash.PreHash(originalKey))
 func PreHash(key []byte) []byte {
-	h := xxh3.Hash128(key)
 	result := make([]byte, 16)
-	binary.LittleEndian.PutUint64(result[0:8], h.Lo)
-	binary.LittleEndian.PutUint64(result[8:16], h.Hi)
+	PreHashInPlace(result, key)
 	return result
 }
 

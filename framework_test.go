@@ -556,8 +556,7 @@ func TestHeaderRoundtrip(t *testing.T) {
 			Magic:           magic,
 			Version:         version,
 			TotalKeys:       rng.Uint64(),
-			NumBlocks:       uint32(rng.IntN(10000-2)) + 2, // [2, 10000)
-			RAMBits:         rng.Uint32(),
+			NumBlocks:       uint32(rng.IntN(10000-2)) + 2,                // [2, 10000)
 			PayloadSize:     uint32(rng.IntN(int(maxPayloadSize) + 1)),    // [0, 8]
 			FingerprintSize: uint8(rng.IntN(int(maxFingerprintSize) + 1)), // [0, 4]
 			Seed:            rng.Uint64(),
@@ -581,9 +580,6 @@ func TestHeaderRoundtrip(t *testing.T) {
 		}
 		if got.NumBlocks != h.NumBlocks {
 			t.Fatalf("iter %d: NumBlocks: got %d, want %d", i, got.NumBlocks, h.NumBlocks)
-		}
-		if got.RAMBits != h.RAMBits {
-			t.Fatalf("iter %d: RAMBits: got %d, want %d", i, got.RAMBits, h.RAMBits)
 		}
 		if got.PayloadSize != h.PayloadSize {
 			t.Fatalf("iter %d: PayloadSize: got %d, want %d", i, got.PayloadSize, h.PayloadSize)

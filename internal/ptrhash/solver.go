@@ -577,11 +577,12 @@ func (s *solver) reset(buckets [][]bucketEntry, numKeys int, globalSeed uint64, 
 	// All slots with slotGen[slot] != s.generation are considered free.
 	// Both slotGen and processedGen use this same generation counter.
 	s.generation++
-	// Handle overflow: with uint8, we wrap at 256->0. hasNoDuplicateSlots uses
-	// s.generation+1 as a temporary marker, so we must reset before that overflows.
-	// Reset when generation >= 254 to ensure generation+1 (max 255) stays valid.
-	// Both slotGen and processedGen must be cleared to prevent stale matches
-	// from 253 blocks ago when the generation was the same value.
+	// Handle overflow: generation is uint8. hasNoDuplicateSlots uses
+	// s.generation+1 as a temporary marker, so the in-use generation must stay
+	// below 255. Resetting at >= 254 keeps it <= 253 (so generation+1 <= 254,
+	// never wrapping to 0). Both slotGen and processedGen must be cleared to
+	// prevent stale matches from ~253 blocks ago when the generation last held
+	// this value.
 	if s.generation >= 254 {
 		s.generation = 1
 		clear(s.slotGen)

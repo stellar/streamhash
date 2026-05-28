@@ -85,12 +85,12 @@ func TestIntegrationMatrix(t *testing.T) {
 	keySizes := []int{16, 24}
 
 	dataModes := []dataMode{
-		{"p0_fp0", 0, 0},   // MPHF only
-		{"p4_fp0", 4, 0},   // payload only, fast path (entrySize=4)
-		{"p4_fp1", 4, 1},   // payload+fp, fast path (entrySize=5)
-		{"p4_fp4", 4, 4},   // payload+fp, fast path (entrySize=8)
-		{"p2_fp1", 2, 1},   // generic path (entrySize=3)
-		{"p6_fp3", 6, 3},   // generic path (entrySize=9)
+		{"p0_fp0", 0, 0}, // MPHF only
+		{"p4_fp0", 4, 0}, // payload only, fast path (entrySize=4)
+		{"p4_fp1", 4, 1}, // payload+fp, fast path (entrySize=5)
+		{"p4_fp4", 4, 4}, // payload+fp, fast path (entrySize=8)
+		{"p2_fp1", 2, 1}, // generic path (entrySize=3)
+		{"p6_fp3", 6, 3}, // generic path (entrySize=9)
 	}
 
 	scales := []int{100, 5000}
@@ -334,4 +334,3 @@ func TestAllPayloadFingerprintCombos(t *testing.T) {
 		}
 	}
 }
-

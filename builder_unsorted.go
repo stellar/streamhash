@@ -10,11 +10,12 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
-	"github.com/tamirms/streamhash/internal/sherr"
 	intbits "github.com/tamirms/streamhash/internal/bits"
+	"github.com/tamirms/streamhash/internal/sherr"
 )
 
 // Unsorted Build Architecture
@@ -280,7 +281,7 @@ func (u *unsortedBuffer) newWriterState() (*writerState, error) {
 	u.nextWriterID++
 	u.writerMu.Unlock()
 
-	bufferCap := maxFlushBufferBytes / 24
+	bufferCap := maxFlushBufferBytes / int(unsafe.Sizeof(bufferedEntry{}))
 	regionCap := max(bufferCap/u.numPartitions+bufferCap/(u.numPartitions*8), 1)
 	flatSize := regionCap * u.numPartitions
 
@@ -289,12 +290,12 @@ func (u *unsortedBuffer) newWriterState() (*writerState, error) {
 		blockCounts[i] = make([]uint16, u.blocksPerPart)
 	}
 	return &writerState{
-		u:          u,
-		writerID:   id,
-		flatBufs:   [2][]bufferedEntry{make([]bufferedEntry, flatSize), make([]bufferedEntry, flatSize)},
-		cursorSets: [2][]int{make([]int, u.numPartitions), make([]int, u.numPartitions)},
-		bufferCap:  bufferCap,
-		regionCap:  regionCap,
+		u:           u,
+		writerID:    id,
+		flatBufs:    [2][]bufferedEntry{make([]bufferedEntry, flatSize), make([]bufferedEntry, flatSize)},
+		cursorSets:  [2][]int{make([]int, u.numPartitions), make([]int, u.numPartitions)},
+		bufferCap:   bufferCap,
+		regionCap:   regionCap,
 		blockCounts: blockCounts,
 	}, nil
 }
@@ -787,4 +788,3 @@ func (ub *UnsortedBuilder) cleanupAll() error {
 	}
 	return errors.Join(errs...)
 }
-

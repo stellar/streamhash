@@ -102,10 +102,13 @@ func main() {
 	fmt.Println("Hashing keys...")
 	hashStart := time.Now()
 	seed := uint32(0x1234)
+	var hashSink uint64
 	for i := range keys {
-		murmur3.Sum128WithSeed(keys[i][:], seed)
+		h1, h2 := murmur3.Sum128WithSeed(keys[i][:], seed)
+		hashSink ^= h1 ^ h2
 	}
 	hashDuration := time.Since(hashStart)
+	runtime.KeepAlive(hashSink) // prevent the compiler from eliding the hash loop
 
 	var payloads []uint64
 	if payloadSize > 0 && payloadSize <= 8 {

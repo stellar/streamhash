@@ -8,7 +8,7 @@ import "errors"
 var (
 	ErrBuilderClosed    = errors.New("streamhash: builder is closed")
 	ErrEmptyIndex       = errors.New("streamhash: cannot build index with zero keys")
-	ErrTooManyKeys      = errors.New("streamhash: key count exceeds maximum (2^40)")
+	ErrTooManyKeys      = errors.New("streamhash: key count exceeds maximum (2^40 - 1)")
 	ErrKeyTooShort      = errors.New("streamhash: key is shorter than minimum required length")
 	ErrKeyTooLong       = errors.New("streamhash: key exceeds maximum length (65535 bytes)")
 	ErrPayloadOverflow  = errors.New("streamhash: payload value exceeds configured PayloadSize capacity")

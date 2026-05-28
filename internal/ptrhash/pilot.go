@@ -35,33 +35,32 @@ const (
 //
 // 1. PILOT INDEPENDENCE (≈256 independent trials)
 //
-//    Without the finalizer, pilot hash values are correlated: the raw
-//    multiplication C*x produces outputs where nearby inputs share high-bit
-//    patterns. Empirically measured (10,000 trials):
+//	Without the finalizer, pilot hash values are correlated: the raw
+//	multiplication C*x produces outputs where nearby inputs share high-bit
+//	patterns. Empirically measured (10,000 trials):
 //
-//      Without SplitMix64:  ~180-225 independent trials (pilots are correlated)
-//      With SplitMix64:     ~253-259 independent trials (pilots are independent)
+//	  Without SplitMix64:  ~180-225 independent trials (pilots are correlated)
+//	  With SplitMix64:     ~253-259 independent trials (pilots are independent)
 //
-//    At scale (1T keys, ~31.6M blocks), the per-block failure probability is
-//    exponentially sensitive to pilot independence. Without the finalizer (~1 in
-//    30 builds at 1T keys would fail); with it, builds are reliable (see config.go).
+//	At scale (1T keys, ~31.6M blocks), the per-block failure probability is
+//	exponentially sensitive to pilot independence. Without the finalizer (~1 in
+//	30 builds at 1T keys would fail); with it, builds are reliable (see config.go).
 //
-//    For comparison, the Rust PTRHash uses XOR slot mixing (h ^ hp) which
-//    yields only ~3-5 independent trials, requiring much larger parts (~millions
-//    of keys) to compensate. Our MUL slot mixing ((h*hp)^(h>>32)) is inherently
-//    better but still needs SplitMix64 for full independence.
+//	For comparison, the Rust PTRHash uses XOR slot mixing (h ^ hp) which
+//	yields only ~3-5 independent trials, requiring much larger parts (~millions
+//	of keys) to compensate. Our MUL slot mixing ((h*hp)^(h>>32)) is inherently
+//	better but still needs SplitMix64 for full independence.
 //
 // 2. "| 1" ENSURES BIJECTIVE MULTIPLICATION
 //
-//    The "| 1" forces hp to be odd. Multiplying by an odd number is a bijection
-//    mod 2^64 (every input maps to a unique output). Even hp values lose the LSB,
-//    causing non-bijective multiplication and more slot collisions.
+//	The "| 1" forces hp to be odd. Multiplying by an odd number is a bijection
+//	mod 2^64 (every input maps to a unique output). Even hp values lose the LSB,
+//	causing non-bijective multiplication and more slot collisions.
 //
-//    Additionally, "| 1" prevents hp=0 (which would collapse slot computation
-//    to depend only on h>>32, losing half the entropy).
+//	Additionally, "| 1" prevents hp=0 (which would collapse slot computation
+//	to depend only on h>>32, losing half the entropy).
 //
 // =============================================================================
-//
 func pilotHash(pilot uint8, globalSeed uint64) uint64 {
 	x := pilotHashC * (uint64(pilot) ^ globalSeed)
 	// SplitMix64 finalizer (Stafford variant, from splitmix64.c by Sebastiano Vigna)

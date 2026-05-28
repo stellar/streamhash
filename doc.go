@@ -59,7 +59,7 @@
 //   - Public API: builder.go (NewSortedBuilder), builder_unsorted.go (NewUnsortedBuilder), index.go (Open, QueryRank, PayloadIndex)
 //   - Configuration: builder_options.go (BuildOption, With* functions)
 //   - Serialization: header.go (header, footer, ramIndexEntry), index_writer.go
-//   - Key routing: key.go (prefix extraction, fastRange), prehash.go (PreHash)
+//   - Key routing & hashing: key.go (fingerprint extraction, payload packing), prehash.go (PreHash); block routing is FastRange32 over the big-endian prefix, inline in builder.go/index.go
 //   - Algorithm dispatch: algorithm.go (blockBuilder/blockDecoder interfaces, factory functions)
 //   - Block algorithms: internal/bijection/ (EF/GR), internal/ptrhash/ (Cuckoo)
 //   - Platform: platform_*.go (OS-specific: fallocate)

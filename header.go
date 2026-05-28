@@ -35,27 +35,25 @@ const (
 //	4       2     Version          0x0001
 //	6       8     TotalKeys        uint64_le
 //	14      4     NumBlocks        uint32_le
-//	18      4     RAMBits          uint32_le (R)
-//	22      4     PayloadSize      uint32_le
-//	26      1     FingerprintSize  uint8 (bytes)
-//	27      8     Seed             uint64_le (globalSeed)
-//	35      2     BlockAlgorithm   uint16_le (0=Bijection, 1=PTRHash)
-//	37      27    Reserved         [27]byte (zero)
+//	18      4     PayloadSize      uint32_le
+//	22      1     FingerprintSize  uint8 (bytes)
+//	23      8     Seed             uint64_le (globalSeed)
+//	31      2     BlockAlgorithm   uint16_le (0=Bijection, 1=PTRHash)
+//	33      31    Reserved         [31]byte (zero)
 //
 // Note: TotalBuckets, BucketsPerBlock, and PrefixBits are algorithm-internal.
 // Each algorithm derives these from NumBlocks using its own constants.
 // UserMetadata and AlgoConfig are stored in variable-length sections after header.
 type header struct {
-	Magic           uint32           // 4 bytes: magic number 0x53544D48
-	Version         uint16           // 2 bytes: format version
-	TotalKeys       uint64           // 8 bytes: total number of keys
-	NumBlocks       uint32           // 4 bytes: number of blocks
-	RAMBits         uint32           // 4 bytes: R (block selection bits)
-	PayloadSize     uint32           // 4 bytes: payload bytes per key (0 = MPHF only)
-	FingerprintSize uint8            // 1 byte: fingerprint bytes (0 = none)
-	Seed            uint64           // 8 bytes: global seed for hashing
+	Magic           uint32    // 4 bytes: magic number 0x53544D48
+	Version         uint16    // 2 bytes: format version
+	TotalKeys       uint64    // 8 bytes: total number of keys
+	NumBlocks       uint32    // 4 bytes: number of blocks
+	PayloadSize     uint32    // 4 bytes: payload bytes per key (0 = MPHF only)
+	FingerprintSize uint8     // 1 byte: fingerprint bytes (0 = none)
+	Seed            uint64    // 8 bytes: global seed for hashing
 	BlockAlgorithm  Algorithm // 2 bytes: algorithm (0=Bijection, 1=PTRHash)
-	Reserved        [27]byte         // 27 bytes: reserved (zero)
+	Reserved        [31]byte  // 31 bytes: reserved (zero)
 }
 
 // encodeTo serializes the header to an existing buffer.
@@ -64,12 +62,11 @@ func (h *header) encodeTo(buf []byte) {
 	binary.LittleEndian.PutUint16(buf[4:6], h.Version)
 	binary.LittleEndian.PutUint64(buf[6:14], h.TotalKeys)
 	binary.LittleEndian.PutUint32(buf[14:18], h.NumBlocks)
-	binary.LittleEndian.PutUint32(buf[18:22], h.RAMBits)
-	binary.LittleEndian.PutUint32(buf[22:26], h.PayloadSize)
-	buf[26] = h.FingerprintSize
-	binary.LittleEndian.PutUint64(buf[27:35], h.Seed)
-	binary.LittleEndian.PutUint16(buf[35:37], uint16(h.BlockAlgorithm))
-	copy(buf[37:64], h.Reserved[:])
+	binary.LittleEndian.PutUint32(buf[18:22], h.PayloadSize)
+	buf[22] = h.FingerprintSize
+	binary.LittleEndian.PutUint64(buf[23:31], h.Seed)
+	binary.LittleEndian.PutUint16(buf[31:33], uint16(h.BlockAlgorithm))
+	copy(buf[33:64], h.Reserved[:])
 }
 
 // decodeHeader parses a 64-byte header.
@@ -83,13 +80,12 @@ func decodeHeader(buf []byte) (*header, error) {
 		Version:         binary.LittleEndian.Uint16(buf[4:6]),
 		TotalKeys:       binary.LittleEndian.Uint64(buf[6:14]),
 		NumBlocks:       binary.LittleEndian.Uint32(buf[14:18]),
-		RAMBits:         binary.LittleEndian.Uint32(buf[18:22]),
-		PayloadSize:     binary.LittleEndian.Uint32(buf[22:26]),
-		FingerprintSize: buf[26],
-		Seed:            binary.LittleEndian.Uint64(buf[27:35]),
-		BlockAlgorithm:  Algorithm(binary.LittleEndian.Uint16(buf[35:37])),
+		PayloadSize:     binary.LittleEndian.Uint32(buf[18:22]),
+		FingerprintSize: buf[22],
+		Seed:            binary.LittleEndian.Uint64(buf[23:31]),
+		BlockAlgorithm:  Algorithm(binary.LittleEndian.Uint16(buf[31:33])),
 	}
-	copy(h.Reserved[:], buf[37:64])
+	copy(h.Reserved[:], buf[33:64])
 
 	if h.Magic != magic {
 		return nil, sherr.ErrInvalidMagic

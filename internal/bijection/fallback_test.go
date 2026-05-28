@@ -254,3 +254,45 @@ func TestFallbackListBoundaries(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveFallbackSeedsMaxEntries verifies that the backward scan in
+// resolveFallbackSeeds LOCATES a maximum-size (255-entry) fallback list. Unlike
+// TestFallbackListBoundaries, which decodes a list whose start is already known,
+// this exercises the scan that finds the list start. A 255-entry list begins
+// exactly maxFallbackSize bytes from the end, so the scan's lower bound must be
+// inclusive — a strict bound skips it and leaves the seeds unresolved.
+func TestResolveFallbackSeedsMaxEntries(t *testing.T) {
+	seedBits := 31 - blockBits
+	seedMask := uint32((1 << seedBits) - 1)
+
+	entries := make([]fallbackEntry, maxFallbackEntries) // 255
+	for j := range entries {
+		entries[j] = fallbackEntry{
+			bucketIndex: uint16(j),              // distinct buckets 0..254
+			subBucket:   0,                      //
+			seed:        uint32(j+1) & seedMask, // distinct, non-marker seeds
+		}
+	}
+
+	var buf []byte
+	fallbackData := encodeFallbackListIntoWithB(entries, blockBits, &buf)
+
+	// Place the list at the end of the metadata, after a non-empty seed-stream
+	// prefix, so resolveFallbackSeeds must scan back to find it. The seed stream
+	// starts at offset 0, so seedStreamOffset = 0.
+	seedStream := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	metadata := append(append([]byte(nil), seedStream...), fallbackData...)
+
+	decoder, err := NewDecoder(nil, 0)
+	if err != nil {
+		t.Fatalf("NewDecoder failed: %v", err)
+	}
+
+	// Resolve an entry deep in the list to exercise the full scan + decode.
+	target := entries[200]
+	got0, _ := decoder.resolveFallbackSeeds(metadata, 0, int(target.bucketIndex), fallbackMarker, fallbackMarker)
+	if got0 != target.seed {
+		t.Fatalf("255-entry fallback list not located: bucket %d resolved to %d (fallbackMarker=%d), want %d",
+			target.bucketIndex, got0, fallbackMarker, target.seed)
+	}
+}

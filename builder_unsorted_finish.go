@@ -7,19 +7,21 @@ import (
 	"fmt"
 	"math/bits"
 	"sync"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
 	intbits "github.com/tamirms/streamhash/internal/bits"
+	"github.com/tamirms/streamhash/internal/sherr"
 )
 
 const (
 	// readBufSize is the streaming read buffer size for partition files.
 	readBufSize = 4 << 20
 
-	// readEntrySize is the per-entry memory during the read phase (routedEntry: 3×uint64).
+	// readEntrySize is the per-entry memory during the read phase (routedEntry).
 	// Used to compute partition count so read-phase flatBuf memory stays bounded.
-	readEntrySize = 24
+	readEntrySize = int(unsafe.Sizeof(routedEntry{}))
 
 	// blockContextCheckInterval is how often to check for context cancellation
 	// during block-level iteration in Finish.
@@ -150,18 +152,36 @@ func (u *unsortedBuffer) readRegion(fd int, offset, regionBytes int64, readBuf [
 }
 
 // mergeBlockCounts sums block counts from all writers into mergedBlockCounts.
-func (u *unsortedBuffer) mergeBlockCounts(allWS []*writerState) {
+//
+// The per-writer counts are uint16. A single block can only exceed 65535 keys
+// (and thus wrap) under catastrophic hash skew. Such a block is unbuildable
+// anyway (it far exceeds maxKeysPerBlock), but that guard fires later during
+// block construction — this check runs first, here in the flush/merge phase,
+// and is the only thing standing between a uint16 wrap and silent mis-bucketing
+// in the read phase. We verify the merged counts sum to the expected key total
+// (already validated against the user-declared count in Finish); a mismatch
+// means a count wrapped, so we abort rather than emit a corrupt index. The
+// total is accumulated inside the existing merge loop (no extra traversal).
+func (u *unsortedBuffer) mergeBlockCounts(allWS []*writerState) error {
 	u.mergedBlockCounts = make([][]int, u.numPartitions)
+	var total uint64
 	for p := range u.numPartitions {
 		merged := make([]int, u.blocksPerPart)
 		for _, ws := range allWS {
 			bc := ws.blockCounts[p]
 			for b := range merged {
-				merged[b] += int(bc[b])
+				v := int(bc[b])
+				merged[b] += v
+				total += uint64(v)
 			}
 		}
 		u.mergedBlockCounts[p] = merged
 	}
+	if total != u.cfg.totalKeys {
+		return fmt.Errorf("%w: per-block counts sum to %d, expected %d (a block likely exceeded the uint16 count limit)",
+			sherr.ErrBlockOverflow, total, u.cfg.totalKeys)
+	}
+	return nil
 }
 
 // maxPartitionEntries returns the maximum entry count across all partitions.
@@ -247,7 +267,9 @@ func (ub *UnsortedBuilder) finishUnsorted() error {
 			allWS = append(allWS, w.ws)
 		}
 	}
-	u.mergeBlockCounts(allWS)
+	if err := u.mergeBlockCounts(allWS); err != nil {
+		return errors.Join(err, ub.cleanupAll())
+	}
 	for _, ws := range allWS {
 		ws.freeBlockCounts()
 	}
@@ -395,7 +417,7 @@ func (ub *UnsortedBuilder) finishUnsortedFastPath() error {
 	if b.workers > 1 {
 		return b.drainParallelPipeline()
 	}
-	return b.iw.finalize()
+	return b.finalizeIndex()
 }
 
 // finishUnsortedSingleThreaded reads partitions sequentially and builds blocks
@@ -482,7 +504,7 @@ func (ub *UnsortedBuilder) finishUnsortedSingleThreaded() error {
 	}
 	ub.unsortedBuf = nil
 
-	return b.iw.finalize()
+	return b.finalizeIndex()
 }
 
 // finishUnsortedParallel reads partitions and dispatches blocks to workers.

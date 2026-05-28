@@ -10,8 +10,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/edsrzf/mmap-go"
-	"github.com/tamirms/streamhash/internal/sherr"
 	intbits "github.com/tamirms/streamhash/internal/bits"
+	"github.com/tamirms/streamhash/internal/sherr"
 )
 
 const (
@@ -65,9 +65,9 @@ type Stats struct {
 	NumBlocks       uint32
 	BitsPerKey      float64
 	PayloadSize     int
-	FingerprintSize int       // bytes per key (0 if disabled)
+	FingerprintSize int // bytes per key (0 if disabled)
 	FileSize        int64
-	OverheadBPK     float64   // MPHF overhead bits per key (excludes payload + fingerprint)
+	OverheadBPK     float64 // MPHF overhead bits per key (excludes payload + fingerprint)
 	Algorithm       Algorithm
 }
 

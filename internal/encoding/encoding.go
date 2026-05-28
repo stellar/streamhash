@@ -41,6 +41,10 @@ func WriteEntry(basePtr unsafe.Pointer, pos, entrySize int, fp uint32, payload u
 
 // ReadFP reads a little-endian fingerprint of fpSize bytes from buf.
 // This is the safe read counterpart to the fp portion of WriteEntry/WriteEntryGeneric.
+//
+// ReadFP, ReadPayload, and ReadEntry exist to verify the WriteEntry round-trip
+// in tests; the production query path reads fingerprints/payloads via the
+// streamhash package's own unpack helpers, not these.
 func ReadFP(buf []byte, fpSize int) uint32 {
 	var v uint32
 	for i := range fpSize {

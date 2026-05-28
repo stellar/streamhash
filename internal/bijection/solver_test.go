@@ -410,12 +410,13 @@ func TestSolverPostConditionLargeScale(t *testing.T) {
 	}
 }
 
-// TestSolveSplitBucketSeedSearchFailed verifies that solveSplitBucket returns
-// ErrSplitBucketSeedSearchFailed when all entries have identical mixParts.
-// When all mixParts are the same, mixFromParts returns the same hash for every
-// entry regardless of seed, making it impossible to split exactly half to the
-// first sub-bucket.
-func TestSolveSplitBucketSeedSearchFailed(t *testing.T) {
+// TestSolveSplitBucketDuplicateKey verifies that solveSplitBucket reports
+// ErrDuplicateKey when entries have identical mixParts. Identical mixParts
+// imply identical keys (the XOR with globalSeed is bijective): mixFromParts
+// returns the same hash for every seed, so no split can separate them. This is
+// a duplicate key, not a seed-search exhaustion, so the precise ErrDuplicateKey
+// is returned rather than ErrSplitBucketSeedSearchFailed.
+func TestSolveSplitBucketDuplicateKey(t *testing.T) {
 	bb := NewBuilder(10000, testSeed1, 0, 0)
 
 	identicalParts := mixParts{xoredK0: 0xAAAAAAAAAAAAAAAA, xoredK1: 0xBBBBBBBBBBBBBBBB}
@@ -426,9 +427,9 @@ func TestSolveSplitBucketSeedSearchFailed(t *testing.T) {
 
 	_, _, err := bb.solveSplitBucket(0, bucket)
 	if err == nil {
-		t.Fatal("expected ErrSplitBucketSeedSearchFailed, got nil")
+		t.Fatal("expected ErrDuplicateKey, got nil")
 	}
-	if !errors.Is(err, sherr.ErrSplitBucketSeedSearchFailed) {
-		t.Fatalf("expected ErrSplitBucketSeedSearchFailed, got: %v", err)
+	if !errors.Is(err, sherr.ErrDuplicateKey) {
+		t.Fatalf("expected ErrDuplicateKey, got: %v", err)
 	}
 }

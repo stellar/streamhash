@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 
 	"github.com/cespare/xxhash/v2"
@@ -103,17 +102,11 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 	}
 
 	// Initialize header (spec §5.2)
-	var r uint32
-	if numBlocks > 1 {
-		r = uint32(math.Ceil(math.Log2(float64(numBlocks))))
-	}
-
 	iw.header = header{
 		Magic:           magic,
 		Version:         version,
 		TotalKeys:       cfg.totalKeys,
 		NumBlocks:       numBlocks,
-		RAMBits:         r,
 		PayloadSize:     uint32(cfg.payloadSize),
 		FingerprintSize: uint8(cfg.fingerprintSize),
 		Seed:            cfg.globalSeed,
@@ -152,19 +145,18 @@ func (iw *indexWriter) foldPayloadHash(blockPayloadHash uint64) {
 	}
 }
 
-// writeMetadata writes metadata for a block to the metadata region via pwrite.
-// Blocks must be written in order (blockID 0, 1, 2, ...).
-// This is used with writePayloadsDirect for parallel builds where payloads
-// are written directly by workers and only metadata goes through the queue.
-func (iw *indexWriter) writeMetadata(metadata []byte, numKeys int) error {
-	// Record RAM index entry
+// recordAndWriteMetadata appends the RAM index entry for the block at the
+// current write position and writes its metadata to the metadata region,
+// updating the streaming metadata hash. It does not advance keyCount/blockCount;
+// callers do that after any payload write so the entry and payload offset both
+// see the pre-block keyCount.
+func (iw *indexWriter) recordAndWriteMetadata(metadata []byte) error {
 	metadataRelOffset := iw.metadataWriteOffset - iw.metadataRegionOffset
 	iw.ramIndex = append(iw.ramIndex, ramIndexEntry{
 		KeysBefore:     iw.keyCount,
 		MetadataOffset: metadataRelOffset,
 	})
 
-	// Write metadata via pwrite and update streaming hash
 	if len(metadata) > 0 {
 		if _, err := unix.Pwrite(iw.fd, metadata, int64(iw.metadataWriteOffset)); err != nil {
 			return err
@@ -173,6 +165,17 @@ func (iw *indexWriter) writeMetadata(metadata []byte, numKeys int) error {
 			panic("hash.Hash.Write returned unexpected error: " + err.Error())
 		}
 		iw.metadataWriteOffset += uint64(len(metadata))
+	}
+	return nil
+}
+
+// writeMetadata writes metadata for a block to the metadata region via pwrite.
+// Blocks must be written in order (blockID 0, 1, 2, ...).
+// This is used with writePayloadsDirect for parallel builds where payloads
+// are written directly by workers and only metadata goes through the queue.
+func (iw *indexWriter) writeMetadata(metadata []byte, numKeys int) error {
+	if err := iw.recordAndWriteMetadata(metadata); err != nil {
+		return err
 	}
 
 	iw.keyCount += uint64(numKeys)
@@ -184,22 +187,8 @@ func (iw *indexWriter) writeMetadata(metadata []byte, numKeys int) error {
 // computing and folding hashes from the provided buffers.
 // This is used by single-threaded builds where the caller provides data in local buffers.
 func (iw *indexWriter) commitBlockWithData(metadata []byte, payloads []byte, numKeys int) error {
-	// Record RAM index entry
-	metadataRelOffset := iw.metadataWriteOffset - iw.metadataRegionOffset
-	iw.ramIndex = append(iw.ramIndex, ramIndexEntry{
-		KeysBefore:     iw.keyCount,
-		MetadataOffset: metadataRelOffset,
-	})
-
-	// Write and hash metadata
-	if len(metadata) > 0 {
-		if _, err := unix.Pwrite(iw.fd, metadata, int64(iw.metadataWriteOffset)); err != nil {
-			return err
-		}
-		if _, err := iw.metadataHasher.Write(metadata); err != nil {
-			panic("hash.Hash.Write returned unexpected error: " + err.Error())
-		}
-		iw.metadataWriteOffset += uint64(len(metadata))
+	if err := iw.recordAndWriteMetadata(metadata); err != nil {
+		return err
 	}
 
 	// Write and hash payloads

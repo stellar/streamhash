@@ -237,10 +237,13 @@ func (d *Decoder) resolveFallbackSeeds(metadata []byte, seedStreamOffset, bucket
 	// 2. metadata[end-1] == metadata[offset] ^ fallbackValidationXOR
 	fallbackOffset := -1
 
-	// Max fallback list size: 2 + 255 entries × 4 bytes = 1022 bytes
+	// Max fallback list size: 2 + 255 entries × 4 bytes = 1022 bytes.
+	// The bound is inclusive (>=): a maximal (255-entry) list starts exactly at
+	// len-maxFallbackSize, so a strict > would skip it and leave fallback seeds
+	// unresolved for that block.
 	maxFallbackSize := 2 + maxFallbackEntries*compactFallbackEntrySize
 	if len(metadata) > seedStreamOffset {
-		for tryOffset := len(metadata) - 2; tryOffset >= seedStreamOffset && tryOffset > len(metadata)-maxFallbackSize; tryOffset-- {
+		for tryOffset := len(metadata) - 2; tryOffset >= seedStreamOffset && tryOffset >= len(metadata)-maxFallbackSize; tryOffset-- {
 			count := int(metadata[tryOffset])
 			expectedSize := 2 + count*compactFallbackEntrySize
 			remaining := len(metadata) - tryOffset

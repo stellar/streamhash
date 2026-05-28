@@ -33,9 +33,9 @@ type routedEntry struct {
 type blockWork struct {
 	blockID    uint32
 	entries    []routedEntry
-	pooled     bool             // true if entries was obtained from entryPool (should be returned)
-	fenceWg    *sync.WaitGroup  // if non-nil, Done() after reading entries (for flatBuf reuse fencing)
-	keysBefore uint64           // Cumulative keys before this block (for payload offset calculation)
+	pooled     bool            // true if entries was obtained from entryPool (should be returned)
+	fenceWg    *sync.WaitGroup // if non-nil, Done() after reading entries (for flatBuf reuse fencing)
+	keysBefore uint64          // Cumulative keys before this block (for payload offset calculation)
 }
 
 // blockResult holds the result of building a block (separated layout).
@@ -157,26 +157,10 @@ func (b *builder) dispatchBlockWork(blockID uint32, entries []routedEntry, poole
 	}
 }
 
-// dispatchEmptyBlock sends an empty block to workers.
-// Updates nextBlockToWrite for consistency with dispatchBlockWork.
-// keysBefore is unchanged: empty blocks have no payloads, so the payload offset is not advanced.
+// dispatchEmptyBlock sends an empty block to workers. An empty block has no
+// entries, so keysBefore is left unchanged (no payload offset to advance).
 func (b *builder) dispatchEmptyBlock(blockID uint32) error {
-	work := blockWork{
-		blockID:    blockID,
-		entries:    nil,
-		keysBefore: b.keysBefore,
-	}
-	b.nextBlockToWrite = blockID + 1
-
-	select {
-	case b.workChan <- work:
-		return nil
-	case <-b.workerCtx.Done():
-		return b.workerCtx.Err()
-	case err := <-b.writerDone:
-		b.writerErr = err
-		return err
-	}
+	return b.dispatchBlockWork(blockID, nil, false)
 }
 
 // runWorker is the worker goroutine that builds blocks in parallel.
@@ -401,7 +385,7 @@ func (b *builder) drainParallelPipeline() error {
 		return errors.Join(primaryErr, b.cleanup())
 	}
 
-	return b.iw.finalize()
+	return b.finalizeIndex()
 }
 
 // shutdownWorkers closes the work channel and waits for worker and writer

@@ -11,8 +11,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/tamirms/streamhash/internal/sherr"
 	intbits "github.com/tamirms/streamhash/internal/bits"
+	"github.com/tamirms/streamhash/internal/sherr"
 )
 
 // entry represents a key-payload pair for test building helpers.
@@ -138,7 +138,6 @@ func sortEntriesByBlock(entries []entry, opts []BuildOption) {
 		return bytes.Compare(a.Key, b.Key)
 	})
 }
-
 
 // buildFromSlice builds an index from a slice of entries.
 // Entries are sorted by block index before building.

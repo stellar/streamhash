@@ -11,7 +11,7 @@ type BuildOption func(*buildConfig)
 type buildConfig struct {
 	workers         int
 	payloadSize     int
-	fingerprintSize int    // in bytes
+	fingerprintSize int // in bytes
 	globalSeed      uint64
 	userMetadata    []byte
 	unsortedTempDir string // temp directory for unsorted partition files
@@ -22,7 +22,7 @@ type buildConfig struct {
 
 func defaultBuildConfig() *buildConfig {
 	return &buildConfig{
-		workers:    0, // Default to single-threaded; use WithWorkers(n) to parallelize
+		workers:    0,                  // Default to single-threaded; use WithWorkers(n) to parallelize
 		globalSeed: 0x1234567890abcdef, // Arbitrary default; overridden via WithGlobalSeed
 	}
 }

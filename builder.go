@@ -9,8 +9,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/tamirms/streamhash/internal/sherr"
 	intbits "github.com/tamirms/streamhash/internal/bits"
+	"github.com/tamirms/streamhash/internal/sherr"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -22,8 +22,10 @@ const (
 	maxKeyLength = 65535
 
 	// maxKeys is the maximum number of keys (~1.1 trillion). The limit comes
-	// from the 40-bit cumulative key counter in the RAM index (see header.go).
-	maxKeys = uint64(1) << 40
+	// from the 40-bit cumulative key counter in the RAM index (see header.go):
+	// the sentinel entry stores KeysBefore == totalKeys, so the largest
+	// representable total is 2^40-1, not 2^40 (which would wrap to 0).
+	maxKeys = uint64(1)<<40 - 1
 )
 
 // builder is the internal shared core for SortedBuilder and UnsortedBuilder.
@@ -32,13 +34,13 @@ type builder struct {
 	cfg              *buildConfig
 	numBlocks        uint32
 	iw               *indexWriter
-	builder          blockBuilder        // Block builder (also used directly in single-threaded mode)
+	builder          blockBuilder // Block builder (also used directly in single-threaded mode)
 	output           string
 	nextBlockToWrite uint32
 	currentBlockIdx  uint32
 	firstKey         bool
 	keyCounter       int
-	closed bool
+	closed           bool
 
 	// Parallel mode fields (when workers > 1)
 	workers         int
@@ -120,12 +122,12 @@ func newBuilder(ctx context.Context, output string, totalKeys uint64, opts ...Bu
 	}
 
 	b := &builder{
-		ctx:          ctx,
-		cfg:          cfg,
-		numBlocks:    numBlocks,
-		iw:           iw,
-		builder:      bldr,
-		output:       output,
+		ctx:         ctx,
+		cfg:         cfg,
+		numBlocks:   numBlocks,
+		iw:          iw,
+		builder:     bldr,
+		output:      output,
 		firstKey:    true,
 		workers:     workers,
 		lastBlockID: -1,
@@ -274,7 +276,7 @@ func (b *builder) finishSingleThreaded() error {
 		}
 	}
 
-	return b.iw.finalize()
+	return b.finalizeIndex()
 }
 
 // buildBlock builds the current block into reusable buffers and writes via pwrite.
@@ -320,6 +322,16 @@ func (b *builder) close() error {
 func (b *builder) cleanup() error {
 	b.shutdownWorkers()
 	return errors.Join(b.iw.close(), os.Remove(b.output))
+}
+
+// finalizeIndex finalizes the index writer, deleting the partial output file if
+// finalization fails — otherwise a failed Finish would leave a corrupt index on
+// disk, since Close() after Finish is a no-op.
+func (b *builder) finalizeIndex() error {
+	if err := b.iw.finalize(); err != nil {
+		return errors.Join(err, b.cleanup())
+	}
+	return nil
 }
 
 // SortedBuilder builds an index from keys that arrive in block-sorted order.
@@ -418,4 +430,3 @@ func (sb *SortedBuilder) Finish() error {
 func (sb *SortedBuilder) Close() error {
 	return sb.b.close()
 }
-
