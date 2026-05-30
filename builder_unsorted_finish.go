@@ -320,7 +320,7 @@ func (ub *UnsortedBuilder) finishUnsortedFastPath() error {
 			base := p * ws.regionCap
 			for i := range n {
 				e := ws.flatBufs[a][base+i]
-				entries = append(entries, routedEntry{k0: e.k0, k1: e.k1, payload: e.payload})
+				entries = append(entries, routedEntry(e))
 				prefix := bits.ReverseBytes64(e.k0)
 				entryBlockIDs = append(entryBlockIDs, intbits.FastRange32(prefix, u.numBlocks))
 			}
@@ -331,7 +331,6 @@ func (ub *UnsortedBuilder) finishUnsortedFastPath() error {
 	for _, ws := range allWS {
 		ws.free()
 	}
-	allWS = nil
 
 	// Check context before doing any work
 	select {

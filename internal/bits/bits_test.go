@@ -84,7 +84,7 @@ func TestFastRange32EdgeCases(t *testing.T) {
 
 	// n=MaxUint32 -> result < MaxUint32
 	got := FastRange32(math.MaxUint64, math.MaxUint32)
-	if got >= math.MaxUint32 {
+	if got == math.MaxUint32 {
 		t.Errorf("FastRange32(MaxUint64, MaxUint32) = %d, want < MaxUint32", got)
 	}
 	if got != math.MaxUint32-1 {

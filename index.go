@@ -333,7 +333,7 @@ func OpenPayload(path string) (*PayloadIndex, error) {
 	}
 	pi, err := idx.WithPayload()
 	if err != nil {
-		idx.Close()
+		_ = idx.Close() // best-effort cleanup; surface the original error
 		return nil, err
 	}
 	return pi, nil
@@ -348,7 +348,7 @@ func OpenPayloadFile(f *os.File) (*PayloadIndex, error) {
 	}
 	pi, err := idx.WithPayload()
 	if err != nil {
-		idx.Close()
+		_ = idx.Close() // best-effort cleanup; surface the original error
 		return nil, err
 	}
 	return pi, nil
@@ -363,7 +363,7 @@ func OpenPayloadBytes(data []byte) (*PayloadIndex, error) {
 	}
 	pi, err := idx.WithPayload()
 	if err != nil {
-		idx.Close()
+		_ = idx.Close() // best-effort cleanup; surface the original error
 		return nil, err
 	}
 	return pi, nil

@@ -1,0 +1,24 @@
+version: "2"
+
+# Uses golangci-lint's default linter set (errcheck, govet, ineffassign,
+# staticcheck, unused). Genuine findings are fixed in code; the exclusions
+# below only silence best-effort error returns that are intentionally ignored.
+linters:
+  settings:
+    errcheck:
+      # Cleanup/close calls whose error is deliberately not actionable.
+      exclude-functions:
+        - (*os.File).Close
+        - os.Remove
+        - os.RemoveAll
+        - os.MkdirAll
+  exclusions:
+    rules:
+      # Tests routinely defer Close() on builders/indexes without checking.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # cmd/bench is internal benchmarking tooling, not library code.
+      - path: cmd/bench/
+        linters:
+          - errcheck

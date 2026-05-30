@@ -697,7 +697,7 @@ func (ub *UnsortedBuilder) AddKeys(numWriters int, fn func(writerID int, addKey 
 	}
 
 	if err := ub.initBuffer(numWriters); err != nil {
-		ub.b.cleanup()
+		_ = ub.b.cleanup() // best-effort cleanup; surface the original error
 		return err
 	}
 
@@ -706,7 +706,7 @@ func (ub *UnsortedBuilder) AddKeys(numWriters int, fn func(writerID int, addKey 
 	for i := range numWriters {
 		ws, err := ub.unsortedBuf.newWriterState()
 		if err != nil {
-			ub.Close()
+			_ = ub.Close() // best-effort cleanup; surface the original error
 			return fmt.Errorf("new writer: %w", err)
 		}
 		w := &unsortedWriter{b: ub.b, ws: ws}
@@ -733,7 +733,7 @@ func (ub *UnsortedBuilder) AddKeys(numWriters int, fn func(writerID int, addKey 
 	wg.Wait()
 
 	if err := errors.Join(errs...); err != nil {
-		ub.Close()
+		_ = ub.Close() // best-effort cleanup; surface the original error
 		return err
 	}
 

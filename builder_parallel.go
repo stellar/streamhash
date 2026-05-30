@@ -317,7 +317,8 @@ func (b *builder) runWriter() {
 			}
 
 			// Return metadata buffer to pool for reuse
-			b.metadataPool.Put(r.metadata[:cap(r.metadata)])
+			//lint:ignore SA6002 slice value boxing is acceptable; pointer-to-slice adds complexity
+			b.metadataPool.Put(r.metadata[:cap(r.metadata)]) //nolint:staticcheck
 
 			nextBlockID++
 		}

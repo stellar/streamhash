@@ -1,0 +1,41 @@
+name: Race Stress
+
+# Tier 2: deeper concurrency fuzzing that gates the MERGED state of main
+# (and on-demand), kept off the per-PR critical path. A single -race run is
+# non-deterministic and only reports races on the interleavings it happens to
+# hit, so here we re-run (-count) and vary GOMAXPROCS (-cpu) to sample many
+# more schedulings.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: race stress
+    runs-on: ubuntu-latest
+    env:
+      # Deeper access history than the per-PR job: catches races whose
+      # conflicting accesses are further apart, at the cost of more memory.
+      GORACE: history_size=4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Whole suite, repeated, to shake out rare races anywhere.
+      - name: Full suite (race, repeated)
+        run: go test -race -count=3 -timeout 30m ./...
+
+      # Hammer the concurrency-specific tests across multiple GOMAXPROCS
+      # settings. 20 repeats x 3 cpu profiles = 60 executions of each test.
+      - name: Concurrency stress (race, repeat + GOMAXPROCS sweep)
+        run: |
+          go test -race \
+            -run 'Parallel|Concurrent|Unsorted|RapidOpenClose' \
+            -count=20 -cpu=1,2,4 -timeout 30m .

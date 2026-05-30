@@ -111,11 +111,6 @@ func (h *header) payloadSizeInt() int {
 	return int(h.PayloadSize)
 }
 
-// hasPayload returns true if the index stores payloads.
-func (h *header) hasPayload() bool {
-	return h.PayloadSize > 0
-}
-
 // hasFingerprint returns true if the index stores fingerprints.
 func (h *header) hasFingerprint() bool {
 	return h.FingerprintSize > 0
