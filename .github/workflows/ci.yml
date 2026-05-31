@@ -72,7 +72,7 @@ jobs:
           go-version-file: go.mod
           # golangci-lint-action manages its own analysis cache.
           cache: false
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
 
