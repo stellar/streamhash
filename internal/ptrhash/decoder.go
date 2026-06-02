@@ -55,6 +55,15 @@ func (d *Decoder) QuerySlot(k0, k1 uint64, metadata []byte, keysInBlock int) (in
 	// If slot is in overflow range, use direct remap lookup
 	if int(slot) >= keysInBlock {
 		remapData := metadata[numBuckets:]
+		// metadata is untrusted (per-block contents are not validated at Open),
+		// so verify the remap region is large enough for every overflow slot in
+		// this block before indexing into it. slot < numSlots, so checking the
+		// largest possible offset covers it. Without this, a truncated/corrupt
+		// remap region panics instead of returning ErrCorruptedIndex.
+		requiredRemap := remapTableHeaderSize + (numSlots-keysInBlock)*remapTableEntrySize
+		if len(remapData) < requiredRemap {
+			return 0, sherr.ErrCorruptedIndex
+		}
 		slot = lookupRemap(remapData, slot, uint32(keysInBlock))
 	}
 

@@ -566,11 +566,18 @@ func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 				select {
 				case <-slotReady[slotIdx]:
 				case <-readerCtx.Done():
-					resultCh[r] <- readResult{err: readerCtx.Err()}
 					return
 				}
 				entries, err := u.readPartition(p, &u.readSlots[slotIdx])
-				resultCh[r] <- readResult{slotIdx, entries, err}
+				// Guard the send: on any error/cancellation the main consumer
+				// stops reading and cancels readerCtx, so a plain blocking send
+				// would hang readerWg.Wait() forever. The deferred
+				// close(resultCh[r]) tells the consumer this reader exited.
+				select {
+				case resultCh[r] <- readResult{slotIdx, entries, err}:
+				case <-readerCtx.Done():
+					return
+				}
 				if err != nil {
 					return
 				}
@@ -578,14 +585,33 @@ func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 		}(r)
 	}
 
+	// fail tears down the reader pool and returns err joined with cleanup. Every
+	// error/cancellation exit below funnels through here so they share one shape.
+	fail := func(err error) error {
+		readerCancel()
+		readerWg.Wait()
+		return errors.Join(err, ub.cleanupAll())
+	}
+
 	// Main thread consumes results in partition order via round-robin.
 	for p := range numParts {
 		r := p % numReaders
-		result := <-resultCh[r]
+		var result readResult
+		select {
+		case res, ok := <-resultCh[r]:
+			if !ok {
+				// Reader r exited early (cancelled) without producing this
+				// result. Tear down and surface the cancellation cause.
+				return fail(b.ctx.Err())
+			}
+			result = res
+		case <-b.ctx.Done():
+			// Parent cancellation while waiting for the next partition. Without
+			// this escape main could block here forever if a reader is parked.
+			return fail(b.ctx.Err())
+		}
 		if result.err != nil {
-			readerCancel()
-			readerWg.Wait()
-			return errors.Join(result.err, ub.cleanupAll())
+			return fail(result.err)
 		}
 
 		slotIdx := result.slotIdx
@@ -597,26 +623,20 @@ func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 			if blockID%blockContextCheckInterval == 0 {
 				select {
 				case <-b.ctx.Done():
-					readerCancel()
-					readerWg.Wait()
-					return errors.Join(b.ctx.Err(), ub.cleanupAll())
+					return fail(b.ctx.Err())
 				default:
 				}
 				select {
 				case err := <-b.writerDone:
 					b.writerErr = err
-					readerCancel()
-					readerWg.Wait()
-					return errors.Join(err, ub.cleanupAll())
+					return fail(err)
 				default:
 				}
 			}
 
 			if len(entries) == 0 {
 				if err := b.dispatchEmptyBlock(blockID); err != nil {
-					readerCancel()
-					readerWg.Wait()
-					return errors.Join(err, ub.cleanupAll())
+					return fail(err)
 				}
 				continue
 			}
@@ -636,15 +656,11 @@ func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 			case b.workChan <- work:
 			case <-b.workerCtx.Done():
 				slotFences[slotIdx].Done()
-				readerCancel()
-				readerWg.Wait()
-				return errors.Join(b.workerCtx.Err(), ub.cleanupAll())
+				return fail(b.workerCtx.Err())
 			case err := <-b.writerDone:
 				b.writerErr = err
 				slotFences[slotIdx].Done()
-				readerCancel()
-				readerWg.Wait()
-				return errors.Join(err, ub.cleanupAll())
+				return fail(err)
 			}
 		}
 

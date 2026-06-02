@@ -102,6 +102,13 @@ func decodeHeader(buf []byte) (*header, error) {
 	if h.NumBlocks == 0 && h.TotalKeys > 0 {
 		return nil, sherr.ErrCorruptedIndex
 	}
+	// Reject the wrap-around value: initFromData computes numRAMEntries as
+	// NumBlocks+1 in uint32, so NumBlocks==0xFFFFFFFF would wrap to 0 and slip
+	// past the RAM-index span check, leaving an empty index that later panics
+	// (e.g. in Verify). No valid index has this many blocks.
+	if h.NumBlocks == ^uint32(0) {
+		return nil, sherr.ErrCorruptedIndex
+	}
 
 	return h, nil
 }

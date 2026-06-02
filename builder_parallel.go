@@ -404,6 +404,17 @@ func (b *builder) shutdownWorkers() {
 	}
 	close(b.workChan)
 	_ = b.workerGroup.Wait()
+	// Cancelled workers return on workerCtx.Done() without draining the rest of
+	// workChan, so release the fences on any work items they left behind. The
+	// unsorted-parallel finish parks a slot-reuse goroutine on each fence; an
+	// un-Done fence would leak that goroutine forever. (On the success path
+	// drainParallelPipeline closes workChan without cancelling, so workers drain
+	// every item themselves and this loop sees nothing.)
+	for work := range b.workChan {
+		if work.fenceWg != nil {
+			work.fenceWg.Done()
+		}
+	}
 	close(b.resultChan)
 	<-b.writerDone
 }

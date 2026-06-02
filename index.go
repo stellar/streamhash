@@ -279,6 +279,14 @@ func (idx *Index) queryInternal(key []byte) (uint64, error) {
 	entry := idx.ramEntry(blockIdx)
 	nextEntry := idx.ramEntry(blockIdx + 1)
 	baseRank := entry.KeysBefore
+
+	// KeysBefore is read raw from the (untrusted) RAM index and must be
+	// monotonic. Reject a non-monotonic pair before the subtraction: otherwise
+	// the uint64 underflow yields a huge value that int() turns negative,
+	// driving the decoder to a slice-bounds panic / wrong rank on corrupt input.
+	if nextEntry.KeysBefore < entry.KeysBefore {
+		return 0, sherr.ErrCorruptedIndex
+	}
 	keysInBlock := int(nextEntry.KeysBefore - entry.KeysBefore)
 
 	if keysInBlock == 0 {

@@ -428,6 +428,15 @@ func (ws *writerState) flushAll() error {
 	return ws.doFlush(ws.activeBuf)
 }
 
+// drainFlush waits for any in-flight background flush goroutine to finish.
+// Abort paths (Close/cleanupAll) must call this before closing the writer's fd:
+// doFlush issues unix.Pwrite on the cached fd from a background goroutine, so
+// closing the fd while that goroutine is mid-write races a closed (and possibly
+// recycled) descriptor. The normal Finish path drains via flushAll instead.
+func (ws *writerState) drainFlush() {
+	ws.flushWg.Wait()
+}
+
 // free releases the writer's flat buffer memory.
 // blockCounts are preserved for merging in finishUnsorted.
 func (ws *writerState) free() {
@@ -776,6 +785,21 @@ func (ub *UnsortedBuilder) Close() error {
 
 // cleanupAll cleans up both unsorted buffer and core builder resources.
 func (ub *UnsortedBuilder) cleanupAll() error {
+	// Drain in-flight background flush goroutines before unsortedBuf.cleanup()
+	// closes the writer fds below. flushAll() already drains on the normal
+	// Finish path; this covers the abort paths (Close, error cleanup) where
+	// flushAll is never called and a stray doFlush pwrite could otherwise hit a
+	// closed fd. (Concurrent AddKeys writers are already drained by their own
+	// close()->flushAll() before any cleanup, so this is a no-op for them.)
+	if ub.defaultWriterWS != nil {
+		ub.defaultWriterWS.drainFlush()
+	}
+	ub.writersMu.Lock()
+	for _, w := range ub.writers {
+		w.ws.drainFlush()
+	}
+	ub.writersMu.Unlock()
+
 	var errs []error
 	if ub.unsortedBuf != nil {
 		if err := ub.unsortedBuf.cleanup(); err != nil {
