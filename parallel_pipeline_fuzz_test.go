@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -404,8 +405,10 @@ func TestWriterErrorNoDeadlock(t *testing.T) {
 			// where workers wedge on the resultChan send with no escape unless
 			// the writer cancels workerCtx. (Set before the first AddKey so the
 			// channel handoffs establish happens-before to the writer's read.)
+			var injectedFired atomic.Bool
 			sb.b.writerFaultHook = func(blockID uint32) error {
 				if sb.b.workersShutDown.Load() {
+					injectedFired.Store(true)
 					return injected
 				}
 				return nil
@@ -420,10 +423,18 @@ func TestWriterErrorNoDeadlock(t *testing.T) {
 				}
 				return sb.Finish()
 			})
-			if buildErr == nil {
-				t.Fatal("expected the injected writer error, got nil")
-			}
-			if !errors.Is(buildErr, injected) {
+			// The fault only injects once main is parked in the drain phase
+			// (workersShutDown set). In rare interleavings the writer completes
+			// every metadata write before that flag flips, so nothing is injected
+			// and the build legitimately succeeds — accept that. But a clean build
+			// *after* a fault fired would mean the writer error was dropped during
+			// teardown (a real bug), so that case still fails loudly.
+			switch {
+			case buildErr == nil:
+				if injectedFired.Load() {
+					t.Fatal("writer fault was injected but Finish returned nil — error dropped during teardown")
+				}
+			case !errors.Is(buildErr, injected):
 				t.Fatalf("expected the injected error to surface, got: %v", buildErr)
 			}
 		})
