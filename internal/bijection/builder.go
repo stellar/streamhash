@@ -246,7 +246,10 @@ func (bb *Builder) MaxMetadataSizeForCurrentBlock() int {
 func (bb *Builder) encodeSeparatedMetadataInto(dst []byte) (int, error) {
 	// Step 1: Encode Elias-Fano cumulative counts and compute EF checkpoints
 	var cp checkpoints
-	efData := bb.encodeEFWithCheckpoints(&cp, bucketsPerBlock)
+	efData, err := bb.encodeEFWithCheckpoints(&cp, bucketsPerBlock)
+	if err != nil {
+		return 0, err
+	}
 
 	// Step 2: Encode SeedStream and compute Seed checkpoints
 	bb.seedEncoder.resetEncoder()
@@ -406,7 +409,7 @@ func (bb *Builder) resolveFallbackSeed(bucketIdx int, subBucket uint8) uint32 {
 }
 
 // encodeEFWithCheckpoints encodes Elias-Fano and computes EF checkpoints.
-func (bb *Builder) encodeEFWithCheckpoints(cp *checkpoints, numBuckets int) []byte {
+func (bb *Builder) encodeEFWithCheckpoints(cp *checkpoints, numBuckets int) ([]byte, error) {
 	efData := encodeEliasFanoInto(bb.cumulative, uint32(bb.keysInBlock), &bb.efBuffer)
 
 	lowBits := computeEFLowBits(numBuckets, bb.keysInBlock)
@@ -423,11 +426,14 @@ func (bb *Builder) encodeEFWithCheckpoints(cp *checkpoints, numBuckets int) []by
 			highPart = int(prevCumulative) >> lowBits
 		}
 
-		bitPos := min(bucketIdx+highPart, math.MaxUint16)
+		bitPos := bucketIdx + highPart
+		if bitPos > math.MaxUint16 {
+			return nil, fmt.Errorf("bijection: EF bit position overflow: %d exceeds uint16 max", bitPos)
+		}
 		cp.efBitPos[checkpointIdx] = uint16(bitPos)
 	}
 
-	return efData
+	return efData, nil
 }
 
 // encodeSeedsWithCheckpoints encodes seeds and computes checkpoints.

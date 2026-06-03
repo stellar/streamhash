@@ -6,6 +6,17 @@ package encoding
 
 import "unsafe"
 
+func init() {
+	// Verify little-endian byte order at startup. WriteEntry and WriteEntryGeneric
+	// use native-width pointer stores that are only correct on little-endian
+	// architectures; running on a big-endian machine would produce silently corrupt
+	// index files.
+	var probe uint16 = 0x0102
+	if *(*byte)(unsafe.Pointer(&probe)) != 0x02 {
+		panic("encoding: package requires a little-endian architecture")
+	}
+}
+
 // WriteEntry packs a fingerprint and payload into a little-endian entry of
 // entrySize bytes at position pos in the buffer starting at basePtr.
 // The entry is stored as: fp | (payload << fpShift), where fpShift is
