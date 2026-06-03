@@ -101,7 +101,7 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 		userMetadata:         cfg.userMetadata,
 	}
 
-	// Initialize header (spec §5.2)
+	// Initialize header (spec §3.2)
 	iw.header = header{
 		Magic:           magic,
 		Version:         version,
@@ -220,7 +220,7 @@ func (iw *indexWriter) finalize() error {
 		return errors.Join(primaryErr, iw.close())
 	}
 
-	// Add sentinel entry for RAM index (spec §5.3)
+	// Add sentinel entry for RAM index (spec §3.4)
 	metadataRelOffset := iw.metadataWriteOffset - iw.metadataRegionOffset
 	iw.ramIndex = append(iw.ramIndex, ramIndexEntry{
 		KeysBefore:     iw.keyCount,

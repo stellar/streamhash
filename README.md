@@ -33,7 +33,7 @@ Run `go run ./cmd/bench` on your hardware for concrete numbers (see [Benchmarkin
 go get github.com/tamirms/streamhash
 ```
 
-Requires Go 1.25+.
+Requires Go 1.26+.
 
 ## Usage
 
@@ -197,4 +197,4 @@ go run ./cmd/bench -keys 10000000 -payload 4 -fp 1 -algo ptrhash -workers 4
 
 ## License
 
-TODO
+Apache License 2.0 — see [LICENSE](LICENSE).

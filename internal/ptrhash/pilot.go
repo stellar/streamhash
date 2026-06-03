@@ -9,7 +9,7 @@ import (
 
 // pilotHashC is the mixing constant used by PTRHash for pilot hashing.
 // This is a well-chosen odd constant that provides good mixing properties.
-// Origin: PTRHash paper (https://arxiv.org/abs/2104.10402).
+// Origin: PtrHash paper (https://arxiv.org/abs/2502.15539).
 const pilotHashC = 0x517cc1b727220a95
 
 const (

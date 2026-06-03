@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// magic number for StreamHash index files (spec §5.2)
+	// magic number for StreamHash index files (spec §3.2)
 	// "STMH" in little-endian
 	magic = uint32(0x53544D48)
 
@@ -26,7 +26,7 @@ const (
 	ramIndexEntrySize = 10
 )
 
-// header is the 64-byte file header (spec §5.2).
+// header is the 64-byte file header (spec §3.2).
 //
 // Layout:
 //
@@ -133,7 +133,7 @@ func (h *header) entrySize() int {
 	return int(h.PayloadSize) + int(h.FingerprintSize)
 }
 
-// footer is the 32-byte file footer (spec §5.7).
+// footer is the 32-byte file footer (spec §3.7).
 //
 // Layout (Separated Layout v3):
 //

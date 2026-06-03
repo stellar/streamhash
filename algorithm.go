@@ -107,7 +107,7 @@ type blockBuilder interface {
 	//
 	// Algorithm-specific values:
 	//   - Bijection: ~8220 bytes (checkpoints + EF + seeds + fallback list)
-	//   - PTRHash: ~3500 bytes (pilots + remap table)
+	//   - PTRHash: ~10,900 bytes (10,000 pilots + remap table)
 	MaxIndexMetadataSize() int
 
 	// MaxMetadataSizeForCurrentBlock returns the maximum metadata size
