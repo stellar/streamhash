@@ -426,6 +426,10 @@ func (bb *Builder) encodeEFWithCheckpoints(cp *checkpoints, numBuckets int) ([]b
 			highPart = int(prevCumulative) >> lowBits
 		}
 
+		// Checkpoints are stored as uint16. This shouldn't overflow for valid
+		// blocks, but if it ever does, error out instead of clamping to a wrong
+		// offset (which would silently corrupt query results). Mirrors the
+		// seedBitPos check in encodeSeedsWithCheckpoints.
 		bitPos := bucketIdx + highPart
 		if bitPos > math.MaxUint16 {
 			return nil, fmt.Errorf("bijection: EF bit position overflow: %d exceeds uint16 max", bitPos)
