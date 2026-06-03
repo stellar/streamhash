@@ -4,6 +4,19 @@ name: "Required status check"
 on:
   pull_request:
 
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR), so a
+# new push doesn't leave an old `complete` job polling until it times out.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege, read-only token: the action only reads workflow/check
+# runs on the PR head to mirror the CI conclusion.
+permissions:
+  contents: read
+  actions: read
+  checks: read
+
 jobs:
   complete:
     runs-on: ubuntu-latest
