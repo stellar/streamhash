@@ -264,7 +264,11 @@ func (bb *Builder) solveExtendedBitmask(bucket []bucketEntry, size int) (uint32,
 		}
 	}
 
-	return 0, sherr.ErrDuplicateKey
+	// Seed search exhausted on DISTINCT keys: genuine duplicates were already
+	// ruled out by hasDuplicateMixParts in solveExtended, so this is the
+	// indistinguishable-hashes case (retryable with a different global seed),
+	// matching the ptrhash solver's labeling.
+	return 0, sherr.ErrIndistinguishableHashes
 }
 
 func (bb *Builder) solveExtendedArray(bucket []bucketEntry, size int) (uint32, error) {
@@ -294,5 +298,8 @@ func (bb *Builder) solveExtendedArray(bucket []bucketEntry, size int) (uint32, e
 		}
 	}
 
-	return 0, sherr.ErrDuplicateKey
+	// Seed search exhausted on DISTINCT keys (duplicates ruled out in
+	// solveExtended): the indistinguishable-hashes case, retryable with a
+	// different global seed.
+	return 0, sherr.ErrIndistinguishableHashes
 }

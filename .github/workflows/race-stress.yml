@@ -4,7 +4,8 @@ name: Race Stress
 # (and on-demand), kept off the per-PR critical path. A single -race run is
 # non-deterministic and only reports races on the interleavings it happens to
 # hit, so here we re-run (-count) and vary GOMAXPROCS (-cpu) to sample many
-# more schedulings.
+# more schedulings. The fuzz job explores beyond the seed corpus and catches
+# teardown deadlocks (each fuzz/stress build is watchdog-bounded) and panics.
 on:
   push:
     branches: [main]
@@ -33,9 +34,38 @@ jobs:
         run: go test -race -count=3 -timeout 30m ./...
 
       # Hammer the concurrency-specific tests across multiple GOMAXPROCS
-      # settings. 20 repeats x 3 cpu profiles = 60 executions of each test.
+      # settings. 20 repeats x 3 cpu profiles = 60 executions of each test —
+      # this is where the intermittent teardown deadlocks (build-error,
+      # writer-error, cancellation) get sampled across many interleavings. The
+      # two heavy parameter/disk-spill coverage tests are skipped here (they run
+      # once in the full-suite step above; 60x would dominate the time budget).
       - name: Concurrency stress (race, repeat + GOMAXPROCS sweep)
         run: |
           go test -race \
-            -run 'Parallel|Concurrent|Unsorted|RapidOpenClose' \
+            -run 'Parallel|Concurrent|Unsorted|RapidOpenClose|Deadlock|WriterError' \
+            -skip 'TeardownSweep|SpillTeardown' \
             -count=20 -cpu=1,2,4 -timeout 30m .
+
+  # Bounded fuzzing of the property/robustness targets, one runner each so they
+  # explore in parallel. These run beyond the seed corpus (which the -race
+  # suites already execute as ordinary tests). A discovered teardown hang is
+  # caught by each target's per-build watchdog; a crasher fails the job and is
+  # written under testdata/fuzz/.
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - FuzzParallelPipelineTeardown
+          - FuzzOpenCorruptIndex
+          - FuzzCorrectnessParameterSpace
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Fuzz ${{ matrix.target }}
+        run: go test -run='^$' -fuzz="^${{ matrix.target }}$" -fuzztime=3m -timeout 10m .

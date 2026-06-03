@@ -23,7 +23,9 @@ var errEvictionLimitExceeded = fmt.Errorf("ptrhash solver: eviction limit exceed
 //  2. Eviction chains with bucket heap: Evicted buckets go on a max-heap ordered by size
 //  3. 16-bucket pinning: Circular buffer prevents eviction cycles
 //  4. Bucket-size-squared scoring: Prefer evicting smaller buckets
-//  5. Random pilot start in Phase 2: Distributes evictions, avoids deterministic cycles
+//  5. Seeded pilot start in Phase 2: a per-attempt PRNG seeded from the global
+//     seed varies the pilot scan start to distribute evictions and avoid
+//     deterministic cycles, while keeping the build reproducible (see solve)
 //  6. Eviction limit: Abort if evictions exceed 10 x numSlots
 //  7. Bitvector for taken slots: O(1) lookup, 8x less memory than bool array
 //  8. Counting sort: O(n) bucket ordering vs heap O(n log n)
@@ -158,17 +160,43 @@ func (s *solver) pin(bucketIdx int) {
 	s.pinnedIdx = (s.pinnedIdx + 1) % pinnedSize
 }
 
+// splitMix64 is a fast, well-distributed finalizer used to derive deterministic
+// RNG seeds from the global seed (see solve).
+func splitMix64(x uint64) uint64 {
+	x += 0x9E3779B97F4A7C15
+	x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9
+	x = (x ^ (x >> 27)) * 0x94D049BB133111EB
+	return x ^ (x >> 31)
+}
+
 // solve assigns pilots to all buckets and builds the remap table.
 // Returns (pilots, remapEntries, error).
 // Returns errEvictionLimitExceeded if eviction limit is hit (caller should retry).
-func (s *solver) solve() ([]uint8, []uint16, error) {
+func (s *solver) solve(attempt int) ([]uint8, []uint16, error) {
 	if s.numKeys == 0 {
 		// All buckets empty - return zero pilots
 		return s.pilots, nil, nil
 	}
 
-	// Process buckets (processed state uses generation-based O(1) clearing)
-	rng := rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
+	// Slot indices are stored as uint16 (keys map into [0,numSlots) and the
+	// remap table is []uint16). numSlots is bounded far below this today (peak
+	// ~33k for the largest block under the enforced 2^40 key ceiling), but
+	// enforce the invariant explicitly so a future change to block sizing fails
+	// cleanly instead of silently truncating slot indices into wrong answers.
+	if s.numSlots > math.MaxUint16 {
+		return nil, nil, fmt.Errorf("%w: block needs %d slots, exceeds the uint16 slot limit %d",
+			sherr.ErrBlockOverflow, s.numSlots, math.MaxUint16)
+	}
+
+	// Deterministic per-attempt eviction RNG. Seed from the global seed so
+	// WithGlobalSeed controls the build and output is reproducible and
+	// byte-identical across build paths; mix in the retry attempt so each retry
+	// still explores different Phase-2 pilot start offsets (preserving the
+	// original retry behavior). This RNG only perturbs tie-breaking / eviction
+	// order — the global seed used for slot computation is unchanged, so the
+	// produced pilots remain valid for the decoder.
+	seedBase := splitMix64(s.globalSeed ^ ((uint64(attempt) + 1) * 0x9E3779B97F4A7C15))
+	rng := rand.New(rand.NewPCG(seedBase, splitMix64(seedBase)))
 	maxEvictions := maxEvictionMultiplier * int(s.numSlots)
 
 	// Use pre-allocated buffers (clear for reuse)

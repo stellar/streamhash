@@ -609,6 +609,17 @@ func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 			// Parent cancellation while waiting for the next partition. Without
 			// this escape main could block here forever if a reader is parked.
 			return fail(b.ctx.Err())
+		case err := <-b.writerDone:
+			// Pool failure (e.g. a worker hit ErrDuplicateKey): the writer exits
+			// and the in-flight blocks' fences are orphaned, which parks the
+			// reader goroutines so resultCh[r] may never deliver. b.workerCtx is
+			// cancelled but it is a child of b.ctx, so b.ctx.Done above never
+			// fires. Observe the failure here — mirroring the inner dispatch
+			// select — and surface the real error instead of deadlocking. (The
+			// readers-parked scenario is always driven by a build error that
+			// reached writerDone, so this is the right error, not a bare cancel.)
+			b.writerErr = err
+			return fail(err)
 		}
 		if result.err != nil {
 			return fail(result.err)

@@ -152,8 +152,9 @@ func (b *builder) dispatchBlockWork(blockID uint32, entries []routedEntry, poole
 	case <-b.workerCtx.Done():
 		return b.workerCtx.Err()
 	case err := <-b.writerDone:
-		b.writerErr = err
-		return err
+		// A nil read here means writerDone was closed (pipeline torn down); do
+		// not drop this block — consumePipelineError surfaces the real error.
+		return b.consumePipelineError(err)
 	}
 }
 
@@ -271,6 +272,17 @@ func (b *builder) runWorker() error {
 		case <-b.workerCtx.Done():
 			return b.workerCtx.Err()
 		}
+
+		// A block build error must propagate to the errgroup, not just ride
+		// along in blockResult.err. Returning it cancels workerCtx, which
+		// releases any peer workers blocked sending on resultChan after the
+		// writer exits on the first error -- otherwise they (and
+		// drainParallelPipeline's workerGroup.Wait) deadlock. Wait then surfaces
+		// this error to Finish(). Covers both the sorted and unsorted-parallel
+		// paths, which share this worker pool and drainParallelPipeline.
+		if buildErr != nil {
+			return buildErr
+		}
 	}
 
 	return nil
@@ -288,6 +300,20 @@ func (b *builder) runWorker() error {
 //
 // Streaming hash: The writer folds payload hashes in block order into the streaming
 // hasher. This produces a deterministic hash-of-hashes that can be verified at read time.
+// failWriter records the writer's terminating error on writerDone and cancels
+// the worker context. The cancellation is the single uniform funnel that closes
+// the whole teardown-deadlock class: a pure writer-side error (e.g. an ENOSPC
+// metadata write) produces no worker buildErr, so without it the errgroup
+// context is never cancelled and workers parked on the resultChan send — plus
+// drainParallelPipeline's workerGroup.Wait — would hang forever. Combined with
+// runWorker returning buildErr (which cancels via the errgroup), this guarantees
+// the invariant: ANY internal failure cancels b.workerCtx exactly once.
+// workerCancel is idempotent (also called by shutdownWorkers).
+func (b *builder) failWriter(err error) {
+	b.writerDone <- err
+	b.workerCancel()
+}
+
 func (b *builder) runWriter() {
 	defer close(b.writerDone)
 
@@ -296,7 +322,7 @@ func (b *builder) runWriter() {
 
 	for result := range b.resultChan {
 		if result.err != nil {
-			b.writerDone <- result.err
+			b.failWriter(result.err)
 			return
 		}
 		pending[result.blockID] = result
@@ -309,10 +335,18 @@ func (b *builder) runWriter() {
 			// Fold payload hash (order enforced by loop)
 			b.iw.foldPayloadHash(r.payloadHash)
 
+			// Test-only fault injection for the writer-error teardown path.
+			if b.writerFaultHook != nil {
+				if ferr := b.writerFaultHook(nextBlockID); ferr != nil {
+					b.failWriter(ferr)
+					return
+				}
+			}
+
 			// Write only metadata (payloads already written directly by workers)
 			// writeMetadata also updates the streaming metadata hasher
 			if err := b.iw.writeMetadata(r.metadata, r.numKeys); err != nil {
-				b.writerDone <- err
+				b.failWriter(err)
 				return
 			}
 
@@ -367,14 +401,21 @@ func (b *builder) finishParallel() error {
 func (b *builder) drainParallelPipeline() error {
 	// Close work channel to signal workers we're done
 	close(b.workChan)
-	b.workersShutDown = true // Prevents double-close in Close()/shutdownWorkers()
+	b.workersShutDown.Store(true) // Prevents double-close in Close()/shutdownWorkers()
 
 	// Wait for all workers to finish
-	if err := b.workerGroup.Wait(); err != nil {
+	if werr := b.workerGroup.Wait(); werr != nil {
 		close(b.resultChan)
-		<-b.writerDone // Wait for writer to exit before cleanup
-		primaryErr := fmt.Errorf("worker error: %w", err)
-		return errors.Join(primaryErr, b.cleanup())
+		// Prefer the writer's error: when the writer initiates the failure it
+		// cancels workerCtx, so workerGroup.Wait returns a bare context.Canceled
+		// while the real cause (e.g. an ENOSPC metadata write, or the block
+		// buildErr) sits in writerDone. Fall back to the worker error only if the
+		// writer reported none (e.g. a worker setup failure).
+		cause := <-b.writerDone
+		if cause == nil {
+			cause = fmt.Errorf("worker error: %w", werr)
+		}
+		return errors.Join(cause, b.cleanup())
 	}
 
 	// Close result channel to signal writer we're done
@@ -395,10 +436,10 @@ func (b *builder) drainParallelPipeline() error {
 // Cancel is called first to unblock workers that may be stuck waiting to
 // send results (e.g., when the writer has already exited due to an error).
 func (b *builder) shutdownWorkers() {
-	if b.workersShutDown || b.workChan == nil {
+	if b.workersShutDown.Load() || b.workChan == nil {
 		return
 	}
-	b.workersShutDown = true
+	b.workersShutDown.Store(true)
 	if b.workerCancel != nil {
 		b.workerCancel()
 	}

@@ -190,10 +190,10 @@ func (b *Builder) BuildSeparatedInto(metadataDst, payloadsDst []byte) (int, int,
 // Retries with different random seeds if eviction limit is hit (rare, <1 in 100K blocks).
 func (b *Builder) solve(metadataDst []byte) error {
 	var err error
-	for range maxGlobalRetries {
+	for attempt := range maxGlobalRetries {
 		// Reset solver state for this block
 		b.solver.reset(b.buckets, b.keysInBlock, b.globalSeed, metadataDst)
-		b.pilots, b.remap, err = b.solver.solve()
+		b.pilots, b.remap, err = b.solver.solve(attempt)
 		if err == nil {
 			b.numSlots = int(b.solver.numSlots)
 			return nil

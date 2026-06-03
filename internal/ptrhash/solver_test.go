@@ -83,7 +83,7 @@ func solveWithRetry(t *testing.T, rng *rand.Rand, s *solver, buckets [][]bucketE
 		pilotsDst := make([]byte, len(buckets))
 		s.reset(buckets, numKeys, globalSeed, pilotsDst)
 
-		pilots, remap, err := s.solve()
+		pilots, remap, err := s.solve(0)
 		if err == nil {
 			return pilots, remap
 		}
@@ -112,7 +112,7 @@ func TestSolverBasic(t *testing.T) {
 	pilotsDst := make([]byte, numBuckets)
 	rs.reset(buckets, numKeys, testGlobalSeed, pilotsDst)
 
-	pilots, _, err := rs.solve()
+	pilots, _, err := rs.solve(0)
 	if err != nil {
 		t.Fatalf("solve failed: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestDuplicateKeyDetection(t *testing.T) {
 			pilotsDst := make([]byte, numBuckets)
 			rs.reset(buckets, numKeys, testGlobalSeed, pilotsDst)
 
-			_, _, err := rs.solve()
+			_, _, err := rs.solve(0)
 			if !errors.Is(err, sherr.ErrDuplicateKey) {
 				t.Errorf("expected sherr.ErrDuplicateKey, got: %v", err)
 			}
@@ -222,7 +222,7 @@ func TestDuplicateKeyMissedWhenPilot1SlotsTaken(t *testing.T) {
 	// This simulates another bucket having already claimed this slot
 	rs.setTaken(slot1)
 
-	_, _, err := rs.solve()
+	_, _, err := rs.solve(0)
 
 	// With the bug: returns ErrIndistinguishableHashes (duplicate check skipped)
 	// With the fix: returns sherr.ErrDuplicateKey
@@ -279,7 +279,7 @@ func TestNoDuplicatesNoError(t *testing.T) {
 	for attempt := range 10 {
 		pilotsDst := make([]byte, numBuckets)
 		rs.reset(buckets, numKeys, testGlobalSeed+uint64(attempt), pilotsDst)
-		_, _, err = rs.solve()
+		_, _, err = rs.solve(0)
 		if err == nil {
 			return // Success
 		}
@@ -483,7 +483,7 @@ func TestGenerationWrapAroundSolve(t *testing.T) {
 		pilotsDst := make([]byte, numBuckets)
 		s.reset(buckets, numKeys, globalSeed, pilotsDst)
 
-		pilots, remap, err := s.solve()
+		pilots, remap, err := s.solve(0)
 		if err != nil {
 			// Eviction limit or indistinguishable hashes can happen with some seeds.
 			// This is normal — just skip that seed.
@@ -588,7 +588,7 @@ func TestDuplicateKeyDetectionAllSizes(t *testing.T) {
 			pilotsDst := make([]byte, 1)
 			s.reset(buckets, numKeys, globalSeed, pilotsDst)
 
-			_, _, err := s.solve()
+			_, _, err := s.solve(0)
 			if !errors.Is(err, sherr.ErrDuplicateKey) {
 				t.Errorf("size %d: expected ErrDuplicateKey, got %v", size, err)
 			}
@@ -633,7 +633,7 @@ func TestSolverPhase2Eviction(t *testing.T) {
 		pilotsDst := make([]byte, len(bucketSizes))
 		s.reset(buckets, numKeys, globalSeed, pilotsDst)
 
-		pilots, _, err := s.solve()
+		pilots, _, err := s.solve(0)
 		if err != nil {
 			// Eviction limit or indistinguishable hashes — retry with different seed.
 			continue

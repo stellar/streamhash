@@ -255,6 +255,16 @@ func (bb *Builder) encodeSeparatedMetadataInto(dst []byte) (int, error) {
 	}
 	seedStreamData := bb.seedEncoder.bytes()
 
+	// Guard the hard format limit before encoding: the fallback list uses a
+	// 1-byte count, so more than maxFallbackEntries cannot be represented. This
+	// is unreachable for honest/hashed keys (observed max ~5 over thousands of
+	// blocks) but is craftable against the fixed default global seed, so fail
+	// with a clean ErrBlockOverflow instead of panicking inside the encoder.
+	if len(bb.fallbackList) > maxFallbackEntries {
+		return 0, fmt.Errorf("%w: block produced %d fallback entries (max %d)",
+			sherr.ErrBlockOverflow, len(bb.fallbackList), maxFallbackEntries)
+	}
+
 	// Step 3: Encode FallbackList with B parameter for compact format
 	fallbackData := encodeFallbackListIntoWithB(bb.fallbackList, blockBits, &bb.fallbackBuffer)
 

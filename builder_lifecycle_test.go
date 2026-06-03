@@ -181,63 +181,63 @@ func TestBuildModeEquivalence(t *testing.T) {
 					t.Fatalf("ReadFile unsorted_par: %v", err)
 				}
 
-				if algo.algo == AlgoBijection {
-					// Bijection is order-independent, so all modes should produce identical bytes
-					if !bytes.Equal(sortedData, parallelData) {
-						t.Error("sorted and parallel outputs differ for bijection")
+				// Both algorithms are deterministic, so every build mode must
+				// produce byte-identical output. (PTRHash's Phase-2 eviction RNG
+				// is now seeded from the global seed rather than process-global
+				// state, so its Cuckoo solver is reproducible across modes too.)
+				if !bytes.Equal(sortedData, parallelData) {
+					t.Errorf("%s: sorted and parallel outputs differ", algo.name)
+				}
+				if !bytes.Equal(sortedData, unsortedData) {
+					t.Errorf("%s: sorted and unsorted outputs differ", algo.name)
+				}
+				if !bytes.Equal(sortedData, unsortedParData) {
+					t.Errorf("%s: sorted and unsorted_parallel outputs differ", algo.name)
+				}
+
+				// Independently confirm every mode is a valid MPHF with correct payloads.
+				for _, tc := range []struct {
+					name string
+					path string
+				}{
+					{"sorted", sortedPath},
+					{"parallel", parallelPath},
+					{"unsorted", unsortedPath},
+					{"unsorted_parallel", unsortedParPath},
+				} {
+					idx, err := Open(tc.path)
+					if err != nil {
+						t.Fatalf("Open %s: %v", tc.name, err)
 					}
-					if !bytes.Equal(sortedData, unsortedData) {
-						t.Error("sorted and unsorted outputs differ for bijection")
-					}
-					if !bytes.Equal(sortedData, unsortedParData) {
-						t.Error("sorted and unsorted_parallel outputs differ for bijection")
-					}
-				} else {
-					// PTRHash may differ due to order-dependent Cuckoo solver.
-					// Verify all modes produce valid MPHFs independently.
-					for _, tc := range []struct {
-						name string
-						path string
-					}{
-						{"sorted", sortedPath},
-						{"parallel", parallelPath},
-						{"unsorted", unsortedPath},
-						{"unsorted_parallel", unsortedParPath},
-					} {
-						idx, err := Open(tc.path)
+					ranks := make(map[uint64]bool)
+					for _, key := range keys {
+						rank, err := idx.QueryRank(key)
 						if err != nil {
-							t.Fatalf("Open %s: %v", tc.name, err)
+							t.Fatalf("Query %s: %v", tc.name, err)
 						}
-						ranks := make(map[uint64]bool)
-						for _, key := range keys {
-							rank, err := idx.QueryRank(key)
-							if err != nil {
-								t.Fatalf("Query %s: %v", tc.name, err)
-							}
-							ranks[rank] = true
-						}
-						if len(ranks) != numKeys {
-							t.Errorf("%s: expected %d unique ranks, got %d", tc.name, numKeys, len(ranks))
-						}
-						// Verify payloads round-trip correctly
-						if cfg.payload > 0 {
-							pi, piErr := idx.WithPayload()
-							if piErr != nil {
-								t.Fatalf("WithPayload %s: %v", tc.name, piErr)
-							}
-							for ki, key := range keys {
-								_, got, err := pi.QueryPayload(key)
-								if err != nil {
-									t.Fatalf("QueryPayload %s key %d: %v", tc.name, ki, err)
-								}
-								want := keyToPayload[string(key)]
-								if got != want {
-									t.Fatalf("%s key %d: payload mismatch: got %d, want %d", tc.name, ki, got, want)
-								}
-							}
-						}
-						idx.Close()
+						ranks[rank] = true
 					}
+					if len(ranks) != numKeys {
+						t.Errorf("%s: expected %d unique ranks, got %d", tc.name, numKeys, len(ranks))
+					}
+					// Verify payloads round-trip correctly
+					if cfg.payload > 0 {
+						pi, piErr := idx.WithPayload()
+						if piErr != nil {
+							t.Fatalf("WithPayload %s: %v", tc.name, piErr)
+						}
+						for ki, key := range keys {
+							_, got, err := pi.QueryPayload(key)
+							if err != nil {
+								t.Fatalf("QueryPayload %s key %d: %v", tc.name, ki, err)
+							}
+							want := keyToPayload[string(key)]
+							if got != want {
+								t.Fatalf("%s key %d: payload mismatch: got %d, want %d", tc.name, ki, got, want)
+							}
+						}
+					}
+					idx.Close()
 				}
 			})
 		}

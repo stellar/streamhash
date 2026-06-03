@@ -571,7 +571,11 @@ func NewUnsortedBuilder(ctx context.Context, output string, totalKeys uint64, te
 }
 
 // initBuffer lazily creates the unsorted buffer with the given writer count.
-func (ub *UnsortedBuilder) initBuffer(numWriters int) error {
+// createDefaultWriter reserves a writer slot for the single-threaded AddKey path
+// (defaultWriterWS). AddKeys creates its own writers and must pass false:
+// otherwise AddKeys(1) would size the buffer for one writer, have that slot
+// consumed by the unused default writer, and then fail to allocate its own.
+func (ub *UnsortedBuilder) initBuffer(numWriters int, createDefaultWriter bool) error {
 	if ub.initialized {
 		return nil
 	}
@@ -582,7 +586,7 @@ func (ub *UnsortedBuilder) initBuffer(numWriters int) error {
 	}
 	ub.unsortedBuf = buf
 
-	if numWriters <= 1 {
+	if createDefaultWriter {
 		ws, err := buf.newWriterState()
 		if err != nil {
 			return errors.Join(fmt.Errorf("init default writer: %w", err), buf.cleanup())
@@ -670,7 +674,7 @@ func (ub *UnsortedBuilder) addKeyFirstCall(key []byte, payload uint64) error {
 	}
 	ub.addKeyUsed = true
 
-	if err := ub.initBuffer(1); err != nil {
+	if err := ub.initBuffer(1, true); err != nil {
 		return errors.Join(err, b.cleanup())
 	}
 
@@ -705,7 +709,7 @@ func (ub *UnsortedBuilder) AddKeys(numWriters int, fn func(writerID int, addKey 
 		return fmt.Errorf("AddKeys: numWriters must be >= 1, got %d", numWriters)
 	}
 
-	if err := ub.initBuffer(numWriters); err != nil {
+	if err := ub.initBuffer(numWriters, false); err != nil {
 		_ = ub.b.cleanup() // best-effort cleanup; surface the original error
 		return err
 	}

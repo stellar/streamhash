@@ -8,6 +8,7 @@ import (
 	"math/bits"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	intbits "github.com/tamirms/streamhash/internal/bits"
 	"github.com/tamirms/streamhash/internal/sherr"
@@ -51,7 +52,14 @@ type builder struct {
 	workerCancel    context.CancelFunc // Cancels workerCtx to unblock stuck workers
 	writerDone      chan error
 	writerErr       error
-	workersShutDown bool // True after worker goroutines have been shut down
+	workersShutDown atomic.Bool // True once the worker pipeline has been torn down
+
+	// writerFaultHook, when non-nil, is invoked by runWriter before each
+	// metadata write with the block ID; a non-nil return injects a writer-side
+	// failure. Test-only (always nil in production) — used to exercise the
+	// pure-writer-error teardown path, which a real ENOSPC/EIO metadata write
+	// would otherwise be the only way to reach.
+	writerFaultHook func(blockID uint32) error
 
 	// Block accumulation for parallel mode
 	pendingEntries []routedEntry // Current block being accumulated
@@ -163,12 +171,28 @@ func (b *builder) checkContextSlow() error {
 	if b.workers > 1 && b.writerDone != nil {
 		select {
 		case err := <-b.writerDone:
-			b.writerErr = err
-			return err
+			return b.consumePipelineError(err)
 		default:
 		}
 	}
 	return nil
+}
+
+// consumePipelineError interprets a value read from writerDone. A non-nil err is
+// the writer's failure (recorded and returned). A nil err means writerDone was
+// CLOSED — the pipeline was already torn down and any real error consumed by an
+// earlier read — so surface the stored error (or ErrBuilderClosed) rather than
+// returning nil, which would let the caller silently drop the block it was about
+// to dispatch (e.g. when a prior AddKey error was ignored).
+func (b *builder) consumePipelineError(err error) error {
+	if err != nil {
+		b.writerErr = err
+		return err
+	}
+	if b.writerErr != nil {
+		return b.writerErr
+	}
+	return sherr.ErrBuilderClosed
 }
 
 // addKeySingleThreaded handles AddKey in single-threaded sorted mode.
