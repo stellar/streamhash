@@ -6,6 +6,16 @@ package encoding
 
 import "unsafe"
 
+func init() {
+	// Fail loudly on big-endian CPUs rather than writing silently corrupt files
+	// (see the package doc above). The probe is 0x0102; on little-endian its first
+	// byte in memory is 0x02.
+	var probe uint16 = 0x0102
+	if *(*byte)(unsafe.Pointer(&probe)) != 0x02 {
+		panic("encoding: package requires a little-endian architecture")
+	}
+}
+
 // WriteEntry packs a fingerprint and payload into a little-endian entry of
 // entrySize bytes at position pos in the buffer starting at basePtr.
 // The entry is stored as: fp | (payload << fpShift), where fpShift is

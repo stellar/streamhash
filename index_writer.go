@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/cespare/xxhash/v2"
@@ -54,6 +55,12 @@ type indexWriter struct {
 func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockBuilder) (*indexWriter, error) {
 	// Compute variable section sizes
 	userMetadataLen := len(cfg.userMetadata)
+	// The length is written to disk as a uint32, so reject anything larger.
+	// Comparing via uint64 keeps this compiling on 32-bit builds, where the
+	// math.MaxUint32 constant doesn't fit in an int.
+	if uint64(userMetadataLen) > math.MaxUint32 {
+		return nil, fmt.Errorf("user metadata size %d exceeds maximum of %d bytes", userMetadataLen, uint64(math.MaxUint32))
+	}
 	algoConfigLen := algo.GlobalConfigSize()
 
 	// Estimate total file size for pre-allocation
