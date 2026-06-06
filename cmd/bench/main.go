@@ -33,7 +33,7 @@ import (
 
 	"github.com/spaolacci/murmur3"
 
-	"github.com/tamirms/streamhash"
+	"github.com/stellar/streamhash"
 )
 
 // getMaxRSS returns the maximum resident set size in bytes.

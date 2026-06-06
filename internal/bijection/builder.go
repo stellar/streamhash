@@ -6,10 +6,10 @@ import (
 	"math"
 	"unsafe"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
-	"github.com/tamirms/streamhash/internal/encoding"
+	intbits "github.com/stellar/streamhash/internal/bits"
+	"github.com/stellar/streamhash/internal/encoding"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // Block metadata format (separated layout with 128-bucket checkpoint stride):

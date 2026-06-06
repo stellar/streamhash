@@ -1,4 +1,4 @@
-module github.com/tamirms/streamhash
+module github.com/stellar/streamhash
 
 go 1.26
 

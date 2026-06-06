@@ -30,7 +30,7 @@ Run `go run ./cmd/bench` on your hardware for concrete numbers (see [Benchmarkin
 ## Installation
 
 ```
-go get github.com/tamirms/streamhash
+go get github.com/stellar/streamhash
 ```
 
 Requires Go 1.26+.

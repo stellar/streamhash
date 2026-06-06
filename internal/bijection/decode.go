@@ -6,9 +6,9 @@ import (
 	"math/bits"
 	"unsafe"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
+	intbits "github.com/stellar/streamhash/internal/bits"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // Decoder handles query-time slot computation for the bijection algorithm.

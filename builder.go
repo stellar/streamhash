@@ -10,8 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
-	"github.com/tamirms/streamhash/internal/sherr"
+	intbits "github.com/stellar/streamhash/internal/bits"
+	"github.com/stellar/streamhash/internal/sherr"
 	"golang.org/x/sync/errgroup"
 )
 

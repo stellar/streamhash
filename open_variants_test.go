@@ -8,7 +8,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // buildTestIndex builds a test MPHF index and returns the file path and sorted keys.

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // This file is a property/fuzz harness for the parallel build pipeline's

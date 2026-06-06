@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // TestReadEFLowBits tests the Elias-Fano low bits reading at buffer boundaries.

@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
+	intbits "github.com/stellar/streamhash/internal/bits"
 )
 
 type testEntry struct {

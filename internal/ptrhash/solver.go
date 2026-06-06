@@ -6,7 +6,7 @@ import (
 	"math/rand/v2"
 	"slices"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // errEvictionLimitExceeded is returned when the PTRHash solver exceeds the

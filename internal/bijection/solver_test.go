@@ -9,7 +9,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // Named seeds for deterministic reproduction.
