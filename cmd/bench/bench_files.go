@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/tamirms/streamhash"
+	"github.com/stellar/streamhash"
 )
 
 const (

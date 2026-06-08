@@ -10,8 +10,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/edsrzf/mmap-go"
-	intbits "github.com/tamirms/streamhash/internal/bits"
-	"github.com/tamirms/streamhash/internal/sherr"
+	intbits "github.com/stellar/streamhash/internal/bits"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 const (

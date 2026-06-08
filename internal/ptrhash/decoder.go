@@ -3,7 +3,7 @@ package ptrhash
 import (
 	"fmt"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // Decoder handles query-time slot computation for PTRHash blocks.

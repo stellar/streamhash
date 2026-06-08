@@ -3,9 +3,9 @@ package streamhash
 import (
 	"fmt"
 
-	"github.com/tamirms/streamhash/internal/bijection"
-	"github.com/tamirms/streamhash/internal/ptrhash"
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/bijection"
+	"github.com/stellar/streamhash/internal/ptrhash"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // Algorithm identifies the MPHF algorithm used for block construction.

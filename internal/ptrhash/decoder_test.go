@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // TestNewDecoder tests the NewDecoder constructor.

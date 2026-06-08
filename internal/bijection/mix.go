@@ -3,7 +3,7 @@ package bijection
 import (
 	"math/bits"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
+	intbits "github.com/stellar/streamhash/internal/bits"
 )
 
 // mixParts holds pre-computed parts of the Mix function that don't depend on the bucket seed.

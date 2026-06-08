@@ -1,7 +1,7 @@
 package bijection
 
 import (
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 func (bb *Builder) solveBijections() error {

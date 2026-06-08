@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math/bits"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
+	intbits "github.com/stellar/streamhash/internal/bits"
 )
 
 // pilotHashC is the mixing constant used by PTRHash for pilot hashing.

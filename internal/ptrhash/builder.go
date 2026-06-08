@@ -6,8 +6,8 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/tamirms/streamhash/internal/encoding"
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/encoding"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // Builder builds a block using the PTRHash algorithm.

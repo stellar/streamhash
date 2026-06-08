@@ -3,7 +3,7 @@ package streamhash
 import (
 	"encoding/binary"
 
-	"github.com/tamirms/streamhash/internal/sherr"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 const (

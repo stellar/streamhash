@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	intbits "github.com/tamirms/streamhash/internal/bits"
-	"github.com/tamirms/streamhash/internal/encoding"
-	"github.com/tamirms/streamhash/internal/sherr"
+	intbits "github.com/stellar/streamhash/internal/bits"
+	"github.com/stellar/streamhash/internal/encoding"
+	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // NOTE: TestEstimateMetadataSizeIsUpperBound, TestEmptyBlockMetadataSize,

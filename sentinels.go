@@ -1,6 +1,6 @@
 package streamhash
 
-import "github.com/tamirms/streamhash/internal/sherr"
+import "github.com/stellar/streamhash/internal/sherr"
 
 // Build errors.
 var (
