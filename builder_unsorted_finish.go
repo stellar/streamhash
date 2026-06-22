@@ -5,11 +5,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/bits"
+	"os"
 	"sync"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 
 	intbits "github.com/stellar/streamhash/internal/bits"
 	"github.com/stellar/streamhash/internal/sherr"
@@ -93,7 +93,7 @@ func (u *unsortedBuffer) readPartition(p int, slot *readSlot) ([][]routedEntry, 
 		if regionBytes == 0 {
 			continue
 		}
-		if err := u.readRegion(u.writerFds[w], regionStart, regionBytes, readBuf, entrySize,
+		if err := u.readRegion(u.writerFiles[w], regionStart, regionBytes, readBuf, entrySize,
 			func(data []byte) {
 				k0 := binary.LittleEndian.Uint64(data[0:8])
 				k1 := binary.LittleEndian.Uint64(data[8:16])
@@ -113,21 +113,18 @@ func (u *unsortedBuffer) readPartition(p int, slot *readSlot) ([][]routedEntry, 
 	return blockEntries, nil
 }
 
-// readRegion reads regionBytes from fd at offset using pread, calling fn for
-// each entry. Uses pread (not seek+read) for concurrent reader safety.
-func (u *unsortedBuffer) readRegion(fd int, offset, regionBytes int64, readBuf []byte, entrySize int, fn func([]byte)) error {
+// readRegion reads regionBytes from r at offset and invokes fn for each
+// fixed-size entry. ReadAt is positional, so readers can share one source.
+func (u *unsortedBuffer) readRegion(r io.ReaderAt, offset, regionBytes int64, readBuf []byte, entrySize int, fn func([]byte)) error {
 	pos := offset
 	remaining := regionBytes
 	leftoverN := 0
 
 	for remaining > 0 {
 		toRead := min(int64(len(readBuf)-leftoverN), remaining)
-		nr, err := unix.Pread(fd, readBuf[leftoverN:leftoverN+int(toRead)], pos)
-		if nr == 0 {
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("pread: unexpected zero read at offset %d with %d remaining", pos, remaining)
+		nr, err := r.ReadAt(readBuf[leftoverN:leftoverN+int(toRead)], pos)
+		if int64(nr) != toRead {
+			return fmt.Errorf("readRegion: short read at offset %d: got %d of %d bytes (%d remaining): %w", pos, nr, toRead, remaining, err)
 		}
 		pos += int64(nr)
 		remaining -= int64(nr)
@@ -142,10 +139,6 @@ func (u *unsortedBuffer) readRegion(fd int, offset, regionBytes int64, readBuf [
 
 		if len(data) > 0 {
 			leftoverN = copy(readBuf, data)
-		}
-
-		if err != nil {
-			return err
 		}
 	}
 	return nil
@@ -225,8 +218,9 @@ func (u *unsortedBuffer) prepareForRead(numSlots int) error {
 	return nil
 }
 
-// cleanup closes all writer fds. The temp directory is removed during
-// createWriterFiles after all files are unlinked. Idempotent.
+// cleanup closes writer files and removes the temp dir. Best-effort and
+// idempotent: teardown errors are ignored so they can't fail a built index
+// (cleanup runs before finalize on the success path).
 func (u *unsortedBuffer) cleanup() error {
 	for w, f := range u.writerFiles {
 		if f != nil {
@@ -235,6 +229,10 @@ func (u *unsortedBuffer) cleanup() error {
 		}
 	}
 	u.writerFiles = nil
+	if u.partsDir != "" {
+		os.RemoveAll(u.partsDir)
+		u.partsDir = ""
+	}
 	return nil
 }
 

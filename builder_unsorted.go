@@ -8,11 +8,10 @@ import (
 	"math"
 	"math/bits"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 
 	intbits "github.com/stellar/streamhash/internal/bits"
 	"github.com/stellar/streamhash/internal/sherr"
@@ -124,7 +123,7 @@ type unsortedBuffer struct {
 	numWriters    int        // total writer count (from config)
 	regionSize    int64      // bytes per partition region per writer file
 	writerFiles   []*os.File // [numWriters]
-	writerFds     []int      // [numWriters] fd cache for pwrite/pread
+	partsDir      string     // temp dir; removed in cleanup
 	writerCursors [][]int64  // [numWriters][numPartitions] byte offset within region
 	nextWriterID  int        // next writerID to assign
 	writerMu      sync.Mutex // protects nextWriterID
@@ -206,7 +205,6 @@ func newUnsortedBuffer(cfg *buildConfig, numBlocks uint32, numWriters int) (*uns
 		numWriters:       numWriters,
 		regionSize:       regionSize,
 		writerFiles:      make([]*os.File, numWriters),
-		writerFds:        make([]int, numWriters),
 		writerCursors:    make([][]int64, numWriters),
 	}
 	for w := range numWriters {
@@ -220,8 +218,8 @@ func newUnsortedBuffer(cfg *buildConfig, numBlocks uint32, numWriters int) (*uns
 	return u, nil
 }
 
-// createWriterFiles creates the temp directory and per-writer files.
-// Each writer gets a single file pre-allocated via fallocate.
+// createWriterFiles creates the temp directory and per-writer files, each
+// pre-allocated then detached (unlinked on Unix, DELETE_ON_CLOSE on Windows).
 func (u *unsortedBuffer) createWriterFiles(tempDir string) error {
 	if tempDir == "" {
 		tempDir = os.TempDir()
@@ -230,33 +228,34 @@ func (u *unsortedBuffer) createWriterFiles(tempDir string) error {
 	if err != nil {
 		return err
 	}
+	u.partsDir = dir
 
 	fileSize := u.regionSize * int64(u.numPartitions)
 	for w := range u.numWriters {
-		path := fmt.Sprintf("%s/writer-%03d", dir, w)
-		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+		path := filepath.Join(dir, fmt.Sprintf("writer-%03d", w))
+		f, err := openWriterFile(path)
 		if err != nil {
 			u.closeWriterFiles()
 			os.RemoveAll(dir)
 			return fmt.Errorf("create writer %d: %w", w, err)
 		}
-		if err := preallocFile(int(f.Fd()), fileSize); err != nil {
+		if err := preallocFile(f, fileSize); err != nil {
 			f.Close()
 			u.closeWriterFiles()
 			os.RemoveAll(dir)
-			return fmt.Errorf("fallocate writer %d (%d bytes): %w", w, fileSize, err)
+			return fmt.Errorf("preallocate writer %d (%d bytes): %w", w, fileSize, err)
 		}
-		if err := os.Remove(path); err != nil {
+		if err := unlinkWhileOpen(path); err != nil {
 			f.Close()
 			u.closeWriterFiles()
 			os.RemoveAll(dir)
 			return fmt.Errorf("unlink writer %d: %w", w, err)
 		}
 		u.writerFiles[w] = f
-		u.writerFds[w] = int(f.Fd())
 	}
 
-	// All files are unlinked — remove the now-empty temp directory.
+	// Unix: files are unlinked, so the dir is empty and removed now. Windows:
+	// DELETE_ON_CLOSE files persist until close, so cleanup() removes the dir.
 	os.Remove(dir)
 	return nil
 }
@@ -399,9 +398,9 @@ func (ws *writerState) doFlush(bufIdx int) error {
 			return fmt.Errorf("partition %d overflow in writer %d: region capacity exceeded", p, ws.writerID)
 		}
 
-		_, err := unix.Pwrite(u.writerFds[ws.writerID], buf[:needed], off)
+		_, err := u.writerFiles[ws.writerID].WriteAt(buf[:needed], off)
 		if err != nil {
-			return fmt.Errorf("pwrite partition %d writer %d: %w", p, ws.writerID, err)
+			return fmt.Errorf("write partition %d writer %d: %w", p, ws.writerID, err)
 		}
 
 		u.writerCursors[ws.writerID][p] = cursor + int64(needed)
@@ -429,10 +428,8 @@ func (ws *writerState) flushAll() error {
 }
 
 // drainFlush waits for any in-flight background flush goroutine to finish.
-// Abort paths (Close/cleanupAll) must call this before closing the writer's fd:
-// doFlush issues unix.Pwrite on the cached fd from a background goroutine, so
-// closing the fd while that goroutine is mid-write races a closed (and possibly
-// recycled) descriptor. The normal Finish path drains via flushAll instead.
+// Abort paths (Close/cleanupAll) must drain before closing the file, or a
+// background WriteAt aborts with ErrClosed and drops its data.
 func (ws *writerState) drainFlush() {
 	ws.flushWg.Wait()
 }
