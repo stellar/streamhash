@@ -25,9 +25,12 @@ Three build paths: `NewSortedBuilder` (sorted input), `NewUnsortedBuilder`
 
 ## Platform
 
-Unix-only: `platform_{linux,darwin,other}.go` all import `golang.org/x/sys/unix`
-(for `fallocate`/`fcntl`), so the library does **not** build on Windows. CI runs
-on ubuntu + macos only.
+`platform_linux.go`/`platform_darwin.go` use `golang.org/x/sys/unix` (for
+`fallocate`/`fcntl`); `platform_other.go` (`!linux && !darwin`, incl. Windows)
+uses `os.File.Truncate`. File I/O is portable `*os.File.WriteAt`/`ReadAt`, and
+the unsorted builder's temp files use unlink-while-open on Unix and
+`FILE_FLAG_DELETE_ON_CLOSE` on Windows. Builds and runs on Windows, but CI is
+ubuntu + macos only — so Windows is compile-verified, not runtime-tested.
 
 ## Concurrency
 
@@ -35,8 +38,8 @@ The builders are heavily concurrent and are the main correctness risk:
 - **Sorted parallel** (`builder_parallel.go`): an `errgroup` worker pool builds
   blocks; a single writer goroutine emits them in block order via channels.
 - **Unsorted** (`builder_unsorted*.go`): concurrent writers each own a temp file
-  (lock-free `pwrite`); the finish phase uses a reader goroutine pool with
-  per-slot fences.
+  (lock-free positional `WriteAt`); the finish phase uses a reader goroutine pool
+  with per-slot fences.
 
 Treat the race detector as a first-class gate, and keep per-test timeouts on the
 channel/`errgroup` code so a deadlock fails the run instead of hanging it. If a

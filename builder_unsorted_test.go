@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	randv2 "math/rand/v2"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -132,6 +133,9 @@ func TestUnsortedBuffer_CleanupIdempotent(t *testing.T) {
 }
 
 func TestUnsortedBuffer_TempDirRemovedAfterCreate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows DELETE_ON_CLOSE temp files persist until cleanup, so the dir is not empty right after create")
+	}
 	tmpDir := t.TempDir()
 	cfg := &buildConfig{totalKeys: 100, payloadSize: 4, unsortedTempDir: tmpDir}
 	numBlocks, _ := numBlocksForAlgo(AlgoBijection, 100, 4, 0)
