@@ -5,7 +5,6 @@ import "github.com/stellar/streamhash/internal/sherr"
 // Build errors.
 var (
 	ErrBuilderClosed    = sherr.ErrBuilderClosed
-	ErrEmptyIndex       = sherr.ErrEmptyIndex
 	ErrTooManyKeys      = sherr.ErrTooManyKeys
 	ErrKeyTooShort      = sherr.ErrKeyTooShort
 	ErrKeyTooLong       = sherr.ErrKeyTooLong
