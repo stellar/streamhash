@@ -86,10 +86,8 @@ type builder struct {
 // With workers > 1, blocks are built in parallel while maintaining
 // the streaming API and O(W × block_size) memory.
 func newBuilder(ctx context.Context, output string, totalKeys uint64, opts ...BuildOption) (*builder, error) {
-	if totalKeys == 0 {
-		return nil, sherr.ErrEmptyIndex
-	}
-
+	// totalKeys == 0 is allowed: numBlocks() floors at 2, so a zero-key build
+	// emits empty blocks and finalizes to a valid empty index.
 	if totalKeys > maxKeys {
 		return nil, sherr.ErrTooManyKeys
 	}
@@ -127,6 +125,11 @@ func newBuilder(ctx context.Context, output string, totalKeys uint64, opts ...Bu
 	}
 	if workers > int(numBlocks) {
 		workers = int(numBlocks)
+	}
+	// A zero-key build has nothing to parallelize; force single-threaded so it
+	// skips the unused parallel writer pipeline.
+	if totalKeys == 0 {
+		workers = 1
 	}
 
 	b := &builder{
@@ -293,7 +296,12 @@ func (b *builder) finishSingleThreaded() error {
 		}
 	}
 
-	// Emit trailing empty blocks
+	return b.commitTrailingEmptyBlocksAndFinalize()
+}
+
+// commitTrailingEmptyBlocksAndFinalize emits empty blocks until blockCount
+// reaches numBlocks, then finalizes.
+func (b *builder) commitTrailingEmptyBlocksAndFinalize() error {
 	for b.iw.blockCount < b.numBlocks {
 		if err := b.commitEmptyBlock(); err != nil {
 			return errors.Join(err, b.cleanup())
@@ -377,6 +385,9 @@ type SortedBuilder struct {
 // NewSortedBuilder creates a builder for sorted input.
 // Keys must be added in block-sorted order via AddKey.
 // Use WithWorkers(N) to parallelize block building during Finish.
+//
+// totalKeys may be 0: the result is a valid empty index whose every QueryRank
+// returns ErrNotFound.
 func NewSortedBuilder(ctx context.Context, output string, totalKeys uint64, opts ...BuildOption) (*SortedBuilder, error) {
 	b, err := newBuilder(ctx, output, totalKeys, opts...)
 	if err != nil {

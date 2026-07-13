@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	intbits "github.com/stellar/streamhash/internal/bits"
-	"github.com/stellar/streamhash/internal/sherr"
 )
 
 // entry represents a key-payload pair for test building helpers.
@@ -142,10 +141,6 @@ func sortEntriesByBlock(entries []entry, opts []BuildOption) {
 // buildFromSlice builds an index from a slice of entries.
 // Entries are sorted by block index before building.
 func buildFromSlice(ctx context.Context, output string, entries []entry, opts ...BuildOption) error {
-	if len(entries) == 0 {
-		return sherr.ErrEmptyIndex
-	}
-
 	cfg := defaultBuildConfig()
 	for _, opt := range opts {
 		opt(cfg)
@@ -178,10 +173,6 @@ func buildFromSlice(ctx context.Context, output string, entries []entry, opts ..
 
 // buildSorted builds an index from a key iterator with []byte payloads.
 func buildSorted(ctx context.Context, output string, totalKeys uint64, keys func(yield func([]byte, []byte) bool), opts ...BuildOption) error {
-	if totalKeys == 0 {
-		return sherr.ErrEmptyIndex
-	}
-
 	builder, err := NewSortedBuilder(ctx, output, totalKeys, opts...)
 	if err != nil {
 		return err
@@ -199,10 +190,6 @@ func buildSorted(ctx context.Context, output string, totalKeys uint64, keys func
 
 // buildFromEntries builds an index from entries, sorting them first.
 func buildFromEntries(ctx context.Context, output string, entries []entry, opts ...BuildOption) error {
-	if len(entries) == 0 {
-		return sherr.ErrEmptyIndex
-	}
-
 	sorted := make([]entry, len(entries))
 	copy(sorted, entries)
 	sortEntriesByBlock(sorted, opts)
@@ -225,10 +212,6 @@ func buildFromEntries(ctx context.Context, output string, entries []entry, opts 
 // quickBuild builds from keys (no payloads), sorting by block.
 // It copies the input slice to avoid mutating the caller's data.
 func quickBuild(ctx context.Context, output string, keys [][]byte, opts ...BuildOption) error {
-	if len(keys) == 0 {
-		return sherr.ErrEmptyIndex
-	}
-
 	sorted := make([][]byte, len(keys))
 	copy(sorted, keys)
 	keys = sorted
@@ -269,10 +252,6 @@ func buildUnsortedFromIter(ctx context.Context, output string, iter func(yield f
 		return true
 	})
 
-	if len(entries) == 0 {
-		return sherr.ErrEmptyIndex
-	}
-
 	sortEntriesByBlock(entries, opts)
 
 	builder, err := NewSortedBuilder(ctx, output, uint64(len(entries)), opts...)
@@ -299,10 +278,6 @@ func buildParallelBytes(ctx context.Context, output string, iter func(yield func
 		entries = append(entries, entry{Key: keyCopy, Payload: payloadToUint64(payload)})
 		return true
 	})
-
-	if len(entries) == 0 {
-		return sherr.ErrEmptyIndex
-	}
 
 	sortEntriesByBlock(entries, opts)
 

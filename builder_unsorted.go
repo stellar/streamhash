@@ -548,6 +548,9 @@ type UnsortedBuilder struct {
 // not recommended at scale since it stores data in RAM/swap.
 //
 // Use WithWorkers(N) to parallelize block building during Finish.
+//
+// totalKeys may be 0: the result is a valid empty index whose every QueryRank
+// returns ErrNotFound.
 func NewUnsortedBuilder(ctx context.Context, output string, totalKeys uint64, tempDir string, opts ...BuildOption) (*UnsortedBuilder, error) {
 	b, err := newBuilder(ctx, output, totalKeys, opts...)
 	if err != nil {
@@ -768,6 +771,12 @@ func (ub *UnsortedBuilder) Finish() error {
 	if totalKeys != b.cfg.totalKeys {
 		primaryErr := fmt.Errorf("%w: expected %d, got %d", sherr.ErrKeyCountMismatch, b.cfg.totalKeys, totalKeys)
 		return errors.Join(primaryErr, ub.cleanupAll())
+	}
+
+	// With no keys added, the lazily-created unsorted buffer is still nil and
+	// finishUnsorted would dereference it. Emit the empty index directly.
+	if ub.unsortedBuf == nil {
+		return b.commitTrailingEmptyBlocksAndFinalize()
 	}
 
 	return ub.finishUnsorted()

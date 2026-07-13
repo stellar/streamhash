@@ -221,16 +221,34 @@ func TestBuilderInvalidPath(t *testing.T) {
 	}
 }
 
+// TestBuilderZeroKeys pins that a zero-key build is NOT an error: it produces a
+// valid empty index whose every lookup misses. (Full cross-algorithm and
+// unsorted coverage lives in TestEmptyIndex.)
 func TestBuilderZeroKeys(t *testing.T) {
 	tmpDir := t.TempDir()
 	indexPath := filepath.Join(tmpDir, "zero.idx")
 	ctx := context.Background()
-	_, err := NewSortedBuilder(ctx, indexPath, 0)
-	if err == nil {
-		t.Error("Expected error for zero keys")
+
+	b, err := NewSortedBuilder(ctx, indexPath, 0)
+	if err != nil {
+		t.Fatalf("NewSortedBuilder(0): %v", err)
 	}
-	if !errors.Is(err, sherr.ErrEmptyIndex) {
-		t.Errorf("Expected ErrEmptyIndex, got %v", err)
+	if err := b.Finish(); err != nil {
+		t.Fatalf("Finish zero-key build: %v", err)
+	}
+
+	idx, err := Open(indexPath)
+	if err != nil {
+		t.Fatalf("Open zero-key index: %v", err)
+	}
+	defer idx.Close()
+
+	if got := idx.NumKeys(); got != 0 {
+		t.Errorf("NumKeys() = %d, want 0", got)
+	}
+	key := make([]byte, MinKeySize)
+	if _, err := idx.QueryRank(key); !errors.Is(err, sherr.ErrNotFound) {
+		t.Errorf("QueryRank on empty index = %v, want ErrNotFound", err)
 	}
 }
 
