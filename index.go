@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"math/bits"
 	"os"
 	"sync/atomic"
@@ -424,6 +425,23 @@ func (idx *Index) NumKeys() uint64 {
 // NumBlocks returns the number of blocks in the index.
 func (idx *Index) NumBlocks() uint32 {
 	return idx.header.NumBlocks
+}
+
+// MaxBlockKeys returns the largest number of keys a single block can hold
+// under this index's on-disk format version. The format stores per-block
+// cumulative key counts as uint16, so no conforming index — whichever block
+// algorithm built it — places more than 65,535 keys in one block, and both
+// builders enforce that ceiling at build time (ErrBlockOverflow). Open
+// rejects unknown format versions, so a live Index always answers for the
+// format it was actually built with; a future version that widens the
+// counts must widen this answer.
+//
+// Combined with the sorted-input routing contract (sorted keys map to
+// non-decreasing blocks — see streamhash-spec.md), this bounds how far
+// slot order can stray from key order: a key-ordered scan emitting in
+// slot order buffers at most MaxBlockKeys()−1 records at a time.
+func (idx *Index) MaxBlockKeys() uint32 {
+	return math.MaxUint16
 }
 
 // PayloadSize returns the payload size per key.

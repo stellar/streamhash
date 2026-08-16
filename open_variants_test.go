@@ -3,6 +3,7 @@ package streamhash
 import (
 	"bytes"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -176,4 +177,23 @@ func TestOpenFileDoesNotCloseFile(t *testing.T) {
 
 	// Index should still work.
 	verifyMPHF(t, idx, keys)
+}
+
+// TestMaxBlockKeys pins the format-level block ceiling: version 1 stores
+// per-block cumulative key counts as uint16, so an opened index must report
+// exactly that ceiling, and it must bound any real block's occupancy (for a
+// single-block index, the whole key count).
+func TestMaxBlockKeys(t *testing.T) {
+	idxPath, keys := buildTestIndex(t, 500, 24)
+	idx, err := Open(idxPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer idx.Close()
+	if got := idx.MaxBlockKeys(); got != math.MaxUint16 {
+		t.Fatalf("MaxBlockKeys = %d, want %d (uint16 format ceiling)", got, math.MaxUint16)
+	}
+	if idx.NumBlocks() == 1 && uint64(len(keys)) > uint64(idx.MaxBlockKeys()) {
+		t.Fatalf("single-block index holds %d keys, above the reported ceiling %d", len(keys), idx.MaxBlockKeys())
+	}
 }
