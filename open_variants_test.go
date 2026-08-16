@@ -184,7 +184,7 @@ func TestOpenFileDoesNotCloseFile(t *testing.T) {
 // exactly that ceiling, and it must bound any real block's occupancy (for a
 // single-block index, the whole key count).
 func TestMaxBlockKeys(t *testing.T) {
-	idxPath, keys := buildTestIndex(t, 500, 24)
+	idxPath, _ := buildTestIndex(t, 500, 24)
 	idx, err := Open(idxPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -193,7 +193,13 @@ func TestMaxBlockKeys(t *testing.T) {
 	if got := idx.MaxBlockKeys(); got != math.MaxUint16 {
 		t.Fatalf("MaxBlockKeys = %d, want %d (uint16 format ceiling)", got, math.MaxUint16)
 	}
-	if idx.NumBlocks() == 1 && uint64(len(keys)) > uint64(idx.MaxBlockKeys()) {
-		t.Fatalf("single-block index holds %d keys, above the reported ceiling %d", len(keys), idx.MaxBlockKeys())
+	// Every real block's occupancy must respect the advertised ceiling —
+	// checked against adjacent cumulative counts in the RAM index (the
+	// sentinel entry at NumBlocks makes the last block's count defined).
+	for i := uint32(0); i < idx.NumBlocks(); i++ {
+		occ := idx.ramEntry(i+1).KeysBefore - idx.ramEntry(i).KeysBefore
+		if occ > uint64(idx.MaxBlockKeys()) {
+			t.Fatalf("block %d holds %d keys, above the reported ceiling %d", i, occ, idx.MaxBlockKeys())
+		}
 	}
 }
