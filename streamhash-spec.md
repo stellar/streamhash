@@ -883,8 +883,10 @@ For end-to-end integrity, the footer's two unseeded-xxHash64 region hashes (§3.
 
 StreamHash assumes uniformly random input. Consequences of violating that:
 
-- **Non-uniform keys** cluster into blocks, overflowing temp-file regions (unsorted mode) — the region margin (§6.2) is calibrated for uniform keys. Pre-hash structured or correlated keys with xxHash3-128 (required, not optional).
-- **Adversarial keys:** an attacker who knows `globalSeed` can craft keys that collide into one block. Mitigation: use a random `globalSeed` that untrusted sources cannot learn.
+- **Non-uniform keys** cluster into blocks, overflowing a block's per-block cap (aborting the build) or the temp-file regions (unsorted mode) — both margins are calibrated for uniform keys. Pre-hash structured or correlated keys with xxHash3-128 (`PreHash`) to restore uniformity. This defends against *accidental* skew only, not a deliberate adversary (see below).
+- **Adversarial keys.** Block routing is *unkeyed*: a key's block is `FastRange32(ReverseBytes64(key[0:8]), numBlocks)`, a public function of the key prefix and the (public) key count. `globalSeed` affects only within-block hashing and fingerprints; it does **not** participate in routing. A random `globalSeed` therefore does **not** mitigate adversarial keys, and neither does `PreHash` (unkeyed xxHash3-128, which the attacker can also compute). An attacker who can choose or grind keys can concentrate enough of them into one block to exceed its per-block cap, causing `ErrBlockOverflow` and aborting the build. This is a denial-of-service on index construction; it fails closed (no partial index is written, see §7.8) and does not affect lookup integrity.
+
+  If keys may be adversary-influenced, apply a **secret-keyed** transform upstream — e.g. `key' = SipHash(secret, key)` or `HMAC(secret, key)` — and index `key'`. Keep `secret` unknown to the untrusted key source (and, per §7.6, outside the index file if that file is itself exposed to the source). Without the secret an attacker cannot predict a key's block and so cannot target one.
 - **Fingerprints** are a probabilistic filter (false-positive rate `2^(−8 × FingerprintSize)`), not a cryptographic authenticator.
 
 ### 7.8. Durability and compatibility

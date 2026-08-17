@@ -156,6 +156,8 @@ if err := builder.Finish(); err != nil {
 rank, err := idx.QueryRank(streamhash.PreHash(originalKey))
 ```
 
+> **Security note:** pre-hashing defends against *accidental* skew, not a deliberate adversary. `PreHash` is unkeyed, so an attacker can compute it too, and `WithGlobalSeed` does not affect block routing. If keys may be adversary-influenced, apply a secret-keyed transform (e.g. SipHash/HMAC) upstream and index that. See [`streamhash-spec.md`](streamhash-spec.md) §7.7.
+
 ## Build Options
 
 | Option | Description | Default |
