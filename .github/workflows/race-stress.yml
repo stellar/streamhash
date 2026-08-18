@@ -23,7 +23,7 @@ jobs:
       # conflicting accesses are further apart, at the cost of more memory.
       GORACE: history_size=4
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -62,7 +62,7 @@ jobs:
           - FuzzOpenCorruptIndex
           - FuzzCorrectnessParameterSpace
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
