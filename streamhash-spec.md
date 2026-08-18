@@ -842,7 +842,6 @@ Error names are from the reference implementation; other implementations may dif
 
 | Error | Condition |
 |-------|-----------|
-| `ErrEmptyIndex` | N = 0 |
 | `ErrKeyTooShort` | key < 16 bytes |
 | `ErrKeyTooLong` | key > 65,535 bytes |
 | `ErrDuplicateKey` | Bijection: identical `k0` and `k1`. PTRHash: two keys in a bucket share `k0 ^ k1` (§7.1) |
@@ -854,6 +853,8 @@ Error names are from the reference implementation; other implementations may dif
 | `ErrUnsortedInput` | out-of-order key (sorted mode) |
 | `ErrSplitBucketSeedSearchFailed` | Bijection split-bucket search exhausted → retry with new `globalSeed` |
 | `ErrIndistinguishableHashes` | PTRHash bucket unsolvable → retry with new `globalSeed` |
+
+An index with `N = 0` keys is not an error: it builds successfully, and every `QueryRank` / `QueryPayload` returns `ErrNotFound`.
 
 **Query / open:**
 
