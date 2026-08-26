@@ -20,6 +20,13 @@ var (
 	ErrFingerprintTooLarge         = sherr.ErrFingerprintTooLarge
 	ErrSplitBucketSeedSearchFailed = sherr.ErrSplitBucketSeedSearchFailed
 	ErrIndistinguishableHashes     = sherr.ErrIndistinguishableHashes
+
+	// ErrBlockOverflow signals that a block exceeded its per-block key cap
+	// during construction — non-uniform or adversarial keys concentrating into
+	// one block (see the security notes in streamhash-spec.md §7.7). Exported so
+	// consumers can errors.Is on it, e.g. to rebuild with a different routing
+	// transform instead of treating the failure as fatal.
+	ErrBlockOverflow = sherr.ErrBlockOverflow
 )
 
 // Index errors.

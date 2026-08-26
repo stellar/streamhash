@@ -883,9 +883,18 @@ For end-to-end integrity, the footer's two unseeded-xxHash64 region hashes (§3.
 
 StreamHash assumes uniformly random input. Consequences of violating that:
 
-- **Non-uniform keys** cluster into blocks, overflowing temp-file regions (unsorted mode) — the region margin (§6.2) is calibrated for uniform keys. Pre-hash structured or correlated keys with xxHash3-128 (required, not optional).
-- **Adversarial keys:** an attacker who knows `globalSeed` can craft keys that collide into one block. Mitigation: use a random `globalSeed` that untrusted sources cannot learn.
-- **Fingerprints** are a probabilistic filter (false-positive rate `2^(−8 × FingerprintSize)`), not a cryptographic authenticator.
+- **Non-uniform keys** collect in a small number of blocks. Each block has a maximum number of keys, sized for uniform input. Exceed it and the build stops with `ErrBlockOverflow`. If your keys are structured or correlated, hash them first with xxHash3-128 (`PreHash`); this restores uniformity. `PreHash` protects against *accidental* skew. It does not protect against an attacker — see the next item.
+- **Adversarial keys.** A key's block is a fixed, public function of the key — no secret is involved:
+
+  ```
+  blockIdx = FastRange32(ReverseBytes64(key[0:8]), numBlocks)
+  ```
+
+  The only inputs are the first 8 bytes of the key and the block count, both public, so anyone can compute which block any key lands in. `globalSeed` does not change this: it applies only to hashing inside a block and to fingerprints, so a random `globalSeed` gives no protection here. `PreHash` gives none either, because xxHash3-128 uses no secret and the attacker can compute it too.
+
+  An attacker can therefore make many keys land in one block — either by choosing keys directly, or, when the keys are values they cannot choose (like transaction hashes), by generating many candidates and keeping only those that land in the target block. Enough of them exceeds the block's maximum, and the build stops with `ErrBlockOverflow`. This is a denial of service against index construction, and nothing worse: the build simply aborts and writes no index file (see §7.8), so the attack can only prevent an index from being built — it cannot corrupt one or cause wrong lookups.
+
+  **Mitigation.** If an untrusted source can influence your keys, transform each key with a secret before indexing it — for example `key' = SipHash(secret, key)`, or any equivalent such as `HMAC(secret, key)`. Build the index over `key'` instead of `key`. Keep `secret` unknown to the untrusted source; if that source can read the index file, keep `secret` outside it (see §7.6). Without the secret an attacker cannot predict a key's block, and so cannot target one.
 
 ### 7.8. Durability and compatibility
 
