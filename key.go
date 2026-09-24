@@ -101,13 +101,9 @@ func extractFingerprint(k0, k1 uint64, fpSize int) uint32 {
 	return fp & mask
 }
 
-// Fingerprint returns the 32-bit fingerprint streamhash computes for key. An
-// index built WithFingerprint(n) stores the low n bytes of this value and uses
-// them to reject keys it was not built with.
-//
-// Use it when you keep your own data for each key outside the index: save the
-// fingerprint with that data, and on lookup compare it with Fingerprint of the
-// key you looked up. A mismatch means the key was never added to the index.
+// Fingerprint returns the 32-bit fingerprint streamhash computes for key, used
+// to reduce false positives. An index built WithFingerprint(n) stores its low n
+// bytes; callers that keep their own data for each key can store it there.
 //
 // Returns ErrKeyTooShort if key is shorter than MinKeySize.
 func Fingerprint(key []byte) (uint32, error) {
