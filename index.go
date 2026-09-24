@@ -24,6 +24,9 @@ const (
 
 // Index is a read-only StreamHash index for querying.
 //
+// The mapping is advised MADV_RANDOM where the platform supports it: every
+// read path except Verify is a point probe, so read-around only wastes I/O.
+//
 // Thread Safety:
 // - QueryRank, PayloadIndex.QueryPayload, and other read methods are safe for concurrent use
 // - Close is NOT safe to call concurrently with queries
@@ -105,6 +108,9 @@ func OpenFile(f *os.File) (*Index, error) {
 	idx := &Index{
 		mmap: mm,
 		data: []byte(mm),
+	}
+	if err := adviseRandom(mm); err != nil {
+		return nil, errors.Join(err, idx.Close())
 	}
 	if err := idx.initFromData(); err != nil {
 		return nil, errors.Join(err, idx.Close())
@@ -502,9 +508,21 @@ func (idx *Index) Stats() *Stats {
 //
 // The hash-of-hashes approach matches the streaming hash computation during build,
 // where workers compute per-block payload hashes that are folded in order.
-func (idx *Index) Verify() error {
+//
+// Verify walks the whole mapping, so it advises it sequential for the walk and
+// restores random-access on return.
+func (idx *Index) Verify() (err error) {
 	if idx.closed.Load() {
 		return sherr.ErrIndexClosed
+	}
+
+	if idx.mmap != nil {
+		if aerr := adviseSequential(idx.mmap); aerr != nil {
+			return aerr
+		}
+		defer func() {
+			err = errors.Join(err, adviseRandom(idx.mmap))
+		}()
 	}
 
 	// Lazy footer decode — only touched by Verify, not Open.
