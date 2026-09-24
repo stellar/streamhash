@@ -699,8 +699,9 @@ func TestPayloadPackUnpack(t *testing.T) {
 // extractFingerprint tests
 // =============================================================================
 
-// TestExtractFingerprintKnownValues verifies extractFingerprint against
-// all 11 known-value tuples from the original test.
+// TestExtractFingerprintKnownValues verifies extractFingerprint, and the public
+// Fingerprint built on it, against all 11 known-value tuples from the original
+// test.
 func TestExtractFingerprintKnownValues(t *testing.T) {
 	testCases := []struct {
 		k0, k1 uint64
@@ -729,6 +730,13 @@ func TestExtractFingerprintKnownValues(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("case %d: extractFingerprint(0x%X, 0x%X, %d) = 0x%X, want 0x%X",
 				i, tc.k0, tc.k1, tc.fpSize, got, tc.want)
+		}
+
+		key := binary.LittleEndian.AppendUint64(binary.LittleEndian.AppendUint64(nil, tc.k0), tc.k1)
+		mask := uint32(uint64(1)<<(8*tc.fpSize) - 1)
+		if fp, err := Fingerprint(key); err != nil || fp&mask != tc.want {
+			t.Errorf("case %d: Fingerprint's low %d bytes = 0x%X, %v; want 0x%X",
+				i, tc.fpSize, fp&mask, err, tc.want)
 		}
 	}
 }

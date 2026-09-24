@@ -121,6 +121,10 @@ rank, err := idx.QueryRank(key)
 // Payload mode: get the stored payload for a key
 pi, err := idx.WithPayload()
 rank, payload, err := pi.QueryPayload(key)
+
+// The key's fingerprint, used to reduce false positives. Pass the same bytes
+// as QueryRank: PreHash(key), if you pre-hash.
+fp, err := streamhash.Fingerprint(key)
 ```
 
 ### Pre-hashing non-uniform keys

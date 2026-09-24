@@ -184,12 +184,13 @@ The framework owns everything that is not perfect-hashing math; an algorithm own
 | Parallel coordination, temp files | Duplicate-key detection while solving |
 | Integrity hashing (hash-of-hashes) | |
 
-An algorithm must satisfy four requirements:
+An algorithm must satisfy five requirements:
 
 1. **Produce a minimal perfect hash** — slots must cover exactly `[0, keysInBlock)` with no gaps, because the framework indexes payloads directly at `rank × entrySize`. (A non-minimal algorithm may include its own remap table, as PTRHash does.)
 2. **Work from `(k0, k1)` only** — 128 bits per key. Algorithms needing more entropy would require framework changes.
 3. **Encode all query state into a flat metadata blob** — the decoder must rebuild the hash from `(k0, k1, metadata, keysInBlock)` alone.
 4. **Handle any block size, including empty** — block sizes vary (keys land in blocks by a Poisson process). For `keysInBlock = 0` the framework short-circuits before calling the decoder, but the solver's reset must still handle the transition.
+5. **Keep the fingerprint independent of slots** — keys that land in the same slot must share a fingerprint (§2.5) no more often than chance.
 
 The **solver is single-threaded** (each parallel worker owns one instance); the **decoder is stateless and thread-safe** (created once at open time, shared across all queries).
 
@@ -205,7 +206,7 @@ function extractFingerprint(k0, k1) → uint32:
     return uint32(h >> 32) & mask(FingerprintSize)
 ```
 
-The constant `0x517cc1b727220a95` is odd, so `k1 × C` is a bijection on uint64 and preserves `k1`'s entropy. The fingerprint reads the **high** 32 bits of the mix because routing constrains only `k0`'s low bits (≤ ~28, always below bit 32 — see the §2.4 note), and XOR has no carry, so those pinned bits never reach bits 32–63. There, neither `k0`'s high bits nor `k1 × C`'s contribution depends on the routing prefix — so the fingerprint is near-independent of routing, and a mismatch reliably flags a non-member. See §7.2 for how queries use it.
+The constant `0x517cc1b727220a95` is odd, so `k1 × C` is a bijection on uint64 and preserves `k1`'s entropy. The fingerprint reads the **high** 32 bits of the mix because routing constrains only `k0`'s low bits (≤ ~28, always below bit 32 — see the §2.4 note), and XOR has no carry, so those pinned bits never reach bits 32–63. What rejecting non-members needs is independence from the **slot**, since a non-member that lands on an occupied slot shares everything that chose it. Bijection chooses the bucket from `k0`'s high bits, so those match; `k1` reaches the slot only through a mix that picks among a bucket's few slots, so `k1 × C` stays nearly independent of it. PTRHash collisions need not share a bucket at all. Both measure at chance. Raw key bytes lack this property, so callers storing their own fingerprints should use `Fingerprint`. See §7.2 for how queries use it.
 
 ### 2.6. Query, end to end
 
@@ -890,7 +891,7 @@ StreamHash assumes uniformly random input. Consequences of violating that:
   blockIdx = FastRange32(ReverseBytes64(key[0:8]), numBlocks)
   ```
 
-  The only inputs are the first 8 bytes of the key and the block count, both public, so anyone can compute which block any key lands in. `globalSeed` does not change this: it applies only to hashing inside a block and to fingerprints, so a random `globalSeed` gives no protection here. `PreHash` gives none either, because xxHash3-128 uses no secret and the attacker can compute it too.
+  The only inputs are the first 8 bytes of the key and the block count, both public, so anyone can compute which block any key lands in. `globalSeed` does not change this: it applies only to hashing inside a block, so a random `globalSeed` gives no protection here. `PreHash` gives none either, because xxHash3-128 uses no secret and the attacker can compute it too.
 
   An attacker can therefore make many keys land in one block — either by choosing keys directly, or, when the keys are values they cannot choose (like transaction hashes), by generating many candidates and keeping only those that land in the target block. Enough of them exceeds the block's maximum, and the build stops with `ErrBlockOverflow`. This is a denial of service against index construction, and nothing worse: the build simply aborts and writes no index file (see §7.8), so the attack can only prevent an index from being built — it cannot corrupt one or cause wrong lookups.
 
