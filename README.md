@@ -122,7 +122,7 @@ rank, err := idx.QueryRank(key)
 pi, err := idx.WithPayload()
 rank, payload, err := pi.QueryPayload(key)
 
-// Fingerprint, to reduce false positives in your own per-key data
+// The key's fingerprint, used to reduce false positives
 fp, err := streamhash.Fingerprint(key)
 ```
 
