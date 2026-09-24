@@ -83,8 +83,9 @@ const fingerprintMixer = 0x517cc1b727220a95
 // constrained by block assignment: the BigEndian prefix (bytes 0-7) maps to
 // blocks via FastRange32, which constrains k0's low byte (key[0], the LSB
 // in LE and MSB of the big-endian prefix). k0's high bits are not free either,
-// since Bijection picks buckets from them; the k1*C term keeps the result
-// independent of the slot (spec §2.5).
+// since Bijection picks buckets from them. k1 reaches the slot only through a
+// mix that picks among a bucket's few slots, so k1*C stays nearly independent
+// of it; tests measure the result at chance (spec §2.5).
 //
 // This unified extraction replaces the previous per-algorithm approach where
 // bijection used k1>>32 and PTRHash used k0>>32. The mixer is algorithm-
