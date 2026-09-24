@@ -122,7 +122,8 @@ rank, err := idx.QueryRank(key)
 pi, err := idx.WithPayload()
 rank, payload, err := pi.QueryPayload(key)
 
-// A key's 32-bit fingerprint, to store beside your own per-rank records
+// If you keep your own data for each key, store this with it; a mismatch on
+// lookup means the key was never added to the index
 fp, err := streamhash.Fingerprint(key)
 ```
 
