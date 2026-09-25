@@ -29,3 +29,15 @@ func adviseSequential(mapping []byte) error {
 	}
 	return nil
 }
+
+const canAdvise = true
+
+// adviseWillNeed starts reading mapping[start:end]. Linux reads at most
+// max(read_ahead_kb, max_sectors_kb) per call, at least 128 KiB on common
+// disks, so it asks in 128 KiB pieces.
+func adviseWillNeed(mapping []byte, start, end uint64) {
+	const piece = 128 << 10
+	for s := start &^ uint64(unix.Getpagesize()-1); s < end; s += piece {
+		_ = unix.Madvise(mapping[s:min(s+piece, end)], unix.MADV_WILLNEED)
+	}
+}
