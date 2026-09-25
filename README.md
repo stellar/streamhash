@@ -121,6 +121,9 @@ rank, err := idx.QueryRank(key)
 // Payload mode: get the stored payload for a key
 pi, err := idx.WithPayload()
 rank, payload, err := pi.QueryPayload(key)
+
+// Batch mode: look up many keys together, so reads from a cold page cache overlap
+results := idx.QueryBatch(keys, 8) // results[i] answers keys[i]; up to 8 lookups at a time
 ```
 
 ### Pre-hashing non-uniform keys
