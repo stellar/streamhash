@@ -56,7 +56,7 @@
 //
 // The implementation is organized as follows:
 //
-//   - Public API: builder.go (NewSortedBuilder), builder_unsorted.go (NewUnsortedBuilder), index.go (Open, QueryRank, PayloadIndex)
+//   - Public API: builder.go (NewSortedBuilder), builder_unsorted.go (NewUnsortedBuilder), index.go (Open, QueryRank, QueryBatch, PayloadIndex)
 //   - Configuration: builder_options.go (BuildOption, With* functions)
 //   - Serialization: header.go (header, footer, ramIndexEntry), index_writer.go
 //   - Key routing & hashing: key.go (fingerprint extraction, payload packing), prehash.go (PreHash); block routing is FastRange32 over the big-endian prefix, inline in builder.go/index.go

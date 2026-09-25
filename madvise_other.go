@@ -6,3 +6,7 @@ package streamhash
 func adviseRandom([]byte) {}
 
 func adviseSequential([]byte) {}
+
+const canAdvise = false
+
+func adviseWillNeed([]byte, uint64, uint64) {}

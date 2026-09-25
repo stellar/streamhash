@@ -125,6 +125,9 @@ rank, payload, err := pi.QueryPayload(key)
 // The key's fingerprint, used to reduce false positives. Pass the same bytes
 // as QueryRank: PreHash(key), if you pre-hash.
 fp, err := streamhash.Fingerprint(key)
+
+// Batch mode: look up many keys together, so reads from a cold page cache overlap
+results := idx.QueryBatch(keys, 8) // results[i] answers keys[i]; up to 8 lookups at a time
 ```
 
 ### Pre-hashing non-uniform keys
