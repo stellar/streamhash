@@ -700,6 +700,9 @@ func TestKeyTooShortForFingerprint(t *testing.T) {
 	if !errors.Is(err, sherr.ErrKeyTooShort) {
 		t.Errorf("Expected ErrKeyTooShort, got: %v", err)
 	}
+	if _, err := Fingerprint(shortKey); !errors.Is(err, sherr.ErrKeyTooShort) {
+		t.Errorf("Fingerprint: expected ErrKeyTooShort, got: %v", err)
+	}
 	builder.Close()
 }
 
