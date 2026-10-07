@@ -82,8 +82,10 @@ const fingerprintMixer = 0x517cc1b727220a95
 // We extract from the high 32 bits (>> 32) because the low bits of k0 are
 // constrained by block assignment: the BigEndian prefix (bytes 0-7) maps to
 // blocks via FastRange32, which constrains k0's low byte (key[0], the LSB
-// in LE and MSB of the big-endian prefix). The high bits (bytes 4-7 in LE)
-// are unconstrained.
+// in LE and MSB of the big-endian prefix). k0's high bits are not free either,
+// since Bijection picks buckets from them. k1 reaches the slot only through a
+// mix that picks among a bucket's few slots, so k1*C stays nearly independent
+// of it; tests measure the result at chance (spec §2.5).
 //
 // This unified extraction replaces the previous per-algorithm approach where
 // bijection used k1>>32 and PTRHash used k0>>32. The mixer is algorithm-
@@ -97,4 +99,20 @@ func extractFingerprint(k0, k1 uint64, fpSize int) uint32 {
 	fp := uint32(h >> 32)
 	mask := uint32((uint64(1) << (fpSize * 8)) - 1)
 	return fp & mask
+}
+
+// Fingerprint returns the 32-bit fingerprint streamhash computes for key, used
+// to reduce false positives. An index built WithFingerprint(n) stores its low n
+// bytes. If you store data for each key yourself, outside the index, you can
+// store the fingerprint with it and check it on lookup. Pass the same bytes you
+// build and query the index with: PreHash(key), if you pre-hash.
+//
+// Returns ErrKeyTooShort if key is shorter than MinKeySize.
+func Fingerprint(key []byte) (uint32, error) {
+	if len(key) < MinKeySize {
+		return 0, ErrKeyTooShort
+	}
+	k0 := binary.LittleEndian.Uint64(key[0:8])
+	k1 := binary.LittleEndian.Uint64(key[8:16])
+	return extractFingerprint(k0, k1, maxFingerprintSize), nil
 }
