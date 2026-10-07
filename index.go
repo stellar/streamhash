@@ -24,8 +24,8 @@ const (
 
 // Index is a read-only StreamHash index for querying.
 //
-// The mapping is advised MADV_RANDOM where the platform supports it: every
-// read path except Verify is a point probe, so read-around only wastes I/O.
+// The payload region is advised MADV_RANDOM where the platform supports it
+// (see payloadMapping).
 //
 // Thread Safety:
 // - QueryRank, PayloadIndex.QueryPayload, and other read methods are safe for concurrent use
@@ -109,12 +109,10 @@ func OpenFile(f *os.File) (*Index, error) {
 		mmap: mm,
 		data: []byte(mm),
 	}
-	if err := adviseRandom(mm); err != nil {
-		return nil, errors.Join(err, idx.Close())
-	}
 	if err := idx.initFromData(); err != nil {
 		return nil, errors.Join(err, idx.Close())
 	}
+	adviseRandom(idx.payloadMapping())
 	return idx, nil
 }
 
@@ -216,6 +214,21 @@ func (idx *Index) initFromData() error {
 // inline alongside the inlined decoder).
 func (idx *Index) ramEntry(i uint32) ramIndexEntry {
 	return decodeRAMIndexEntry(idx.ramIndexBytes[uint64(i)*ramIndexEntrySize:])
+}
+
+// payloadMapping is the page-aligned part of the payload region, or nil for
+// OpenBytes. Lookups fault it at scattered points, so read-around only wastes
+// I/O there. The header, RAM index and metadata keep the default advice: every
+// lookup reuses them, and MADV_RANDOM also makes reclaim ignore accesses
+// (Linux 6.3+), so they would be evicted while hot.
+func (idx *Index) payloadMapping() []byte {
+	pg := uint64(os.Getpagesize())
+	start := (idx.payloadRegionOffset + pg - 1) &^ (pg - 1)
+	end := idx.metadataRegionOffset &^ (pg - 1)
+	if start >= end || end > uint64(len(idx.mmap)) {
+		return nil
+	}
+	return idx.mmap[start:end]
 }
 
 // Close closes the index and releases resources.
@@ -509,20 +522,16 @@ func (idx *Index) Stats() *Stats {
 // The hash-of-hashes approach matches the streaming hash computation during build,
 // where workers compute per-block payload hashes that are folded in order.
 //
-// Verify walks the whole mapping, so it advises it sequential for the walk and
-// restores random-access on return.
-func (idx *Index) Verify() (err error) {
+// Verify walks the whole mapping, so it advises the payload region sequential
+// for the walk and restores random-access on return.
+func (idx *Index) Verify() error {
 	if idx.closed.Load() {
 		return sherr.ErrIndexClosed
 	}
 
-	if idx.mmap != nil {
-		if aerr := adviseSequential(idx.mmap); aerr != nil {
-			return aerr
-		}
-		defer func() {
-			err = errors.Join(err, adviseRandom(idx.mmap))
-		}()
+	if p := idx.payloadMapping(); p != nil {
+		adviseSequential(p)
+		defer adviseRandom(p)
 	}
 
 	// Lazy footer decode — only touched by Verify, not Open.

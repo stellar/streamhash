@@ -2,30 +2,21 @@
 
 package streamhash
 
-import (
-	"fmt"
+import "golang.org/x/sys/unix"
 
-	"golang.org/x/sys/unix"
-)
+// Advice is a hint, so errors are ignored: a failure (e.g. EAGAIN when the
+// mapping split hits vm.max_map_count) only leaves the default read-around.
 
 // adviseRandom marks the mapping random-access: a fault reads only the page touched.
-func adviseRandom(mapping []byte) error {
-	if len(mapping) == 0 {
-		return nil
+func adviseRandom(mapping []byte) {
+	if len(mapping) > 0 {
+		_ = unix.Madvise(mapping, unix.MADV_RANDOM)
 	}
-	if err := unix.Madvise(mapping, unix.MADV_RANDOM); err != nil {
-		return fmt.Errorf("madvise MADV_RANDOM: %w", err)
-	}
-	return nil
 }
 
 // adviseSequential marks the mapping sequential-access, restoring read-around for a walk.
-func adviseSequential(mapping []byte) error {
-	if len(mapping) == 0 {
-		return nil
+func adviseSequential(mapping []byte) {
+	if len(mapping) > 0 {
+		_ = unix.Madvise(mapping, unix.MADV_SEQUENTIAL)
 	}
-	if err := unix.Madvise(mapping, unix.MADV_SEQUENTIAL); err != nil {
-		return fmt.Errorf("madvise MADV_SEQUENTIAL: %w", err)
-	}
-	return nil
 }
