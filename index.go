@@ -1,12 +1,14 @@
 package streamhash
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
 	"math/bits"
 	"os"
+	"slices"
 	"sync/atomic"
 
 	"github.com/cespare/xxhash/v2"
@@ -28,7 +30,7 @@ const (
 // (see payloadMapping).
 //
 // Thread Safety:
-// - QueryRank, PayloadIndex.QueryPayload, and other read methods are safe for concurrent use
+// - QueryRank, QueryBatch, PayloadIndex.QueryPayload, and other read methods are safe for concurrent use
 // - Close is NOT safe to call concurrently with queries
 // - Close must only be called after all queries have completed
 // - After Close returns, no methods may be called on the Index
@@ -51,6 +53,7 @@ type Index struct {
 	numRAMEntries uint32
 
 	// Separated layout region offsets (computed from header)
+	ramIndexOffset       uint64
 	payloadRegionOffset  uint64
 	metadataRegionOffset uint64
 
@@ -193,6 +196,7 @@ func (idx *Index) initFromData() error {
 	idx.entrySize = hdr.entrySize()
 
 	// Compute separated layout region offsets
+	idx.ramIndexOffset = ramIndexStart
 	idx.payloadRegionOffset = ramIndexEnd
 	payloadRegionSize := hdr.TotalKeys * uint64(idx.entrySize)
 	idx.metadataRegionOffset = idx.payloadRegionOffset + payloadRegionSize
@@ -259,6 +263,111 @@ func (idx *Index) QueryRank(key []byte) (uint64, error) {
 	return idx.queryInternal(key)
 }
 
+// Result is one key's answer from QueryBatch.
+type Result struct {
+	Rank    uint64
+	Payload uint64 // zero if the index has no payloads
+	Err     error  // as QueryRank returns, e.g. ErrNotFound
+}
+
+// QueryBatch looks up keys together. On a cold page cache it starts every
+// key's reads at once, one dependent step at a time (RAM index entries, block
+// metadata, then fingerprint and payload entries), rather than one lookup after
+// another. results[i] is the answer for keys[i].
+func (idx *Index) QueryBatch(keys [][]byte) []Result {
+	if canAdvise && idx.mmap != nil && !idx.closed.Load() {
+		idx.prefetch(keys, func(start, end uint64) { adviseWillNeed(idx.mmap, start, end) })
+	}
+	pi, _ := idx.WithPayload() // nil if the index has no payloads
+	results := make([]Result, len(keys))
+	for i, key := range keys {
+		r := &results[i]
+		if pi == nil {
+			r.Rank, r.Err = idx.QueryRank(key)
+		} else {
+			r.Rank, r.Payload, r.Err = pi.QueryPayload(key)
+		}
+	}
+	return results
+}
+
+// prefetch hands advise the ranges the keys' lookups read, each step reading
+// what the one before asked for: RAM index entries locate the metadata, which
+// locates the entries. Page faults hold one of Go's GOMAXPROCS slots while they
+// wait, so these reads are asked for together rather than from goroutines.
+func (idx *Index) prefetch(keys [][]byte, advise func(start, end uint64)) {
+	blocks := make([]uint32, 0, len(keys))
+	for _, key := range keys {
+		if len(key) < MinKeySize {
+			continue
+		}
+		b := intbits.FastRange32(bits.ReverseBytes64(binary.LittleEndian.Uint64(key)), idx.header.NumBlocks)
+		if b+1 < idx.numRAMEntries {
+			blocks = append(blocks, b)
+		}
+	}
+	// In block order, both the RAM index entries and the metadata come out sorted.
+	slices.Sort(blocks)
+	blocks = slices.Compact(blocks)
+
+	ranges := make([]byteRange, 0, len(blocks))
+	for _, b := range blocks {
+		start := idx.ramIndexOffset + uint64(b)*ramIndexEntrySize
+		ranges = append(ranges, byteRange{start, start + 2*ramIndexEntrySize})
+	}
+	willNeed(ranges, advise)
+
+	// Each block's metadata is located by its entry, so this waits for the reads
+	// above. Empty or corrupt blocks are skipped, as queryInternal stops before
+	// reading them.
+	ranges = ranges[:0]
+	for _, b := range blocks {
+		e, next := idx.ramEntry(b), idx.ramEntry(b+1)
+		start, end := idx.metadataRegionOffset+e.MetadataOffset, idx.metadataRegionOffset+next.MetadataOffset
+		if e.KeysBefore < next.KeysBefore && start < end && end <= uint64(len(idx.data)) {
+			ranges = append(ranges, byteRange{start, end})
+		}
+	}
+	willNeed(ranges, advise)
+
+	// Ranks are decoded from the metadata, so this waits for the reads above.
+	if idx.entrySize == 0 {
+		return
+	}
+	ranges = ranges[:0]
+	for _, key := range keys {
+		if len(key) < MinKeySize {
+			continue
+		}
+		rank, err := idx.locate(key)
+		if err != nil || rank >= idx.header.TotalKeys {
+			continue
+		}
+		start := idx.payloadRegionOffset + rank*uint64(idx.entrySize)
+		if end := start + uint64(idx.entrySize); end <= uint64(len(idx.data)) {
+			ranges = append(ranges, byteRange{start, end})
+		}
+	}
+	slices.SortFunc(ranges, func(a, b byteRange) int { return cmp.Compare(a.start, b.start) })
+	willNeed(ranges, advise)
+}
+
+type byteRange struct{ start, end uint64 }
+
+// willNeed hands advise each range, reading ranges less than 16 KiB apart as
+// one. The ranges must be within the file and in order; a corrupt index can
+// break the order, which only costs some prefetching.
+func willNeed(ranges []byteRange, advise func(start, end uint64)) {
+	const gap = 16 << 10
+	for i := 0; i < len(ranges); {
+		r := ranges[i]
+		for i++; i < len(ranges) && ranges[i].start <= r.end+gap; i++ {
+			r.end = max(r.end, ranges[i].end)
+		}
+		advise(r.start, r.end)
+	}
+}
+
 // verifyFingerprintSeparated checks if the fingerprint matches.
 // Reads from the separated payload region.
 // Always uses extractFingerprint(k0, k1, fpSize) for both build and query.
@@ -281,7 +390,13 @@ func (idx *Index) verifyFingerprintSeparated(k0, k1 uint64, globalRank uint64) (
 
 // queryInternal is the internal query implementation.
 // Uses the algorithm-specific decoder to compute slots.
-func (idx *Index) queryInternal(key []byte) (uint64, error) {
+func (idx *Index) queryInternal(key []byte) (uint64, error) { return idx.lookup(key, true) }
+
+// locate is queryInternal without the fingerprint check: it reads the key's RAM
+// index entry and block metadata, but not its entry.
+func (idx *Index) locate(key []byte) (uint64, error) { return idx.lookup(key, false) }
+
+func (idx *Index) lookup(key []byte, checkFingerprint bool) (uint64, error) {
 	// Step 1: Parse key and route to block
 	// k0, k1 are little-endian for hash computation
 	// prefix is big-endian for monotonic block routing
@@ -332,7 +447,7 @@ func (idx *Index) queryInternal(key []byte) (uint64, error) {
 	// Step 5: Compute global rank and verify fingerprint
 	globalRank := baseRank + uint64(localSlot)
 
-	if idx.header.hasFingerprint() {
+	if checkFingerprint && idx.header.hasFingerprint() {
 		ok, err := idx.verifyFingerprintSeparated(k0, k1, globalRank)
 		if err != nil {
 			return 0, err

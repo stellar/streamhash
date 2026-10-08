@@ -13,13 +13,13 @@ import (
 )
 
 // buildTestIndex builds a test MPHF index and returns the file path and sorted keys.
-func buildTestIndex(t *testing.T, numKeys, keySize int) (idxPath string, keys [][]byte) {
+func buildTestIndex(t *testing.T, numKeys, keySize int, opts ...BuildOption) (idxPath string, keys [][]byte) {
 	t.Helper()
 	rng := newTestRNG(t)
 	keys = generateRandomKeys(rng, numKeys, keySize)
 	slices.SortFunc(keys, bytes.Compare)
 	idxPath = filepath.Join(t.TempDir(), "test.idx")
-	if err := quickBuild(t.Context(), idxPath, keys); err != nil {
+	if err := quickBuild(t.Context(), idxPath, keys, opts...); err != nil {
 		t.Fatalf("quickBuild: %v", err)
 	}
 	return idxPath, keys
@@ -200,6 +200,91 @@ func TestMaxBlockKeys(t *testing.T) {
 		occ := idx.ramEntry(i+1).KeysBefore - idx.ramEntry(i).KeysBefore
 		if occ > uint64(idx.MaxBlockKeys()) {
 			t.Fatalf("block %d holds %d keys, above the reported ceiling %d", i, occ, idx.MaxBlockKeys())
+		}
+	}
+}
+
+// prefetch must ask for every RAM index and metadata byte the keys' lookups
+// read, and little more. The test models a cold cache: the RAM index and
+// metadata are garbage until prefetch asks for them, and asking copies the real
+// bytes in. The lookups must then answer as they do on the real index, which
+// also shows prefetch read no entry before asking for it.
+func TestPrefetchAsksForWhatLookupsRead(t *testing.T) {
+	for _, algo := range []Algorithm{AlgoBijection, AlgoPTRHash} {
+		path, keys := buildTestIndex(t, 500_000, MinKeySize, WithAlgorithm(algo), WithPayload(4), WithFingerprint(2))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		real, err := OpenBytes(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ram := byteRange{real.ramIndexOffset, real.ramIndexOffset + uint64(len(real.ramIndexBytes))}
+		entries := byteRange{real.payloadRegionOffset, real.metadataRegionOffset}
+		meta := byteRange{real.metadataRegionOffset, uint64(len(data)) - footerSize}
+
+		cache := slices.Clone(data)
+		for _, r := range []byteRange{ram, entries, meta} {
+			for i := r.start; i < r.end; i++ {
+				cache[i] ^= 0xFF
+			}
+		}
+		idx, err := OpenBytes(cache)
+		if err != nil {
+			t.Fatal(err)
+		}
+		batch := make([][]byte, 5)
+		for i := range batch {
+			batch[i] = keys[i*len(keys)/len(batch)] // keys are sorted: spread them over the blocks
+		}
+		var asked uint64
+		idx.prefetch(batch, func(start, end uint64) {
+			copy(cache[start:end], data[start:end])
+			asked += end - start
+		})
+
+		if all := ram.end - ram.start + entries.end - entries.start + meta.end - meta.start; asked*2 > all {
+			t.Fatalf("%v: asked for %d of %d bytes, not much less than everything", algo, asked, all)
+		}
+		realPI, _ := real.WithPayload()
+		pi, _ := idx.WithPayload()
+		for _, key := range batch {
+			wantRank, wantPayload, _ := realPI.QueryPayload(key)
+			if rank, payload, err := pi.QueryPayload(key); err != nil || rank != wantRank || payload != wantPayload {
+				t.Fatalf("%v: a lookup read bytes prefetch did not ask for: rank %d, payload %d, %v; want %d, %d",
+					algo, rank, payload, err, wantRank, wantPayload)
+			}
+		}
+	}
+}
+
+// QueryBatch must give each key the answer the single-key lookups give it, in
+// its own slot.
+func TestQueryBatch(t *testing.T) {
+	keys := generateRandomKeys(newTestRNG(t), 10_000, MinKeySize)
+	payloads := make([]uint64, len(keys))
+	for i := range payloads {
+		payloads[i] = uint64(i)
+	}
+	batch := append(keys[:100:100], make([]byte, MinKeySize), []byte("short"))
+	for _, algo := range []Algorithm{AlgoBijection, AlgoPTRHash} {
+		for _, sizes := range []struct{ payload, fingerprint int }{{0, 0}, {0, 2}, {3, 0}, {4, 1}} {
+			idx := buildAndOpenUnsorted(t, keys, payloads, t.TempDir(),
+				WithAlgorithm(algo), WithPayload(sizes.payload), WithFingerprint(sizes.fingerprint))
+			pi, _ := idx.WithPayload()
+			for i, got := range idx.QueryBatch(batch) {
+				var want Result
+				if sizes.payload == 0 {
+					want.Rank, want.Err = idx.QueryRank(batch[i])
+				} else {
+					want.Rank, want.Payload, want.Err = pi.QueryPayload(batch[i])
+				}
+				if got != want {
+					t.Fatalf("%v, %+v, key %d: got %+v, want %+v", algo, sizes, i, got, want)
+				}
+			}
+			idx.Close()
 		}
 	}
 }
