@@ -221,10 +221,11 @@ func TestPrefetchAsksForWhatLookupsRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		ram := byteRange{real.ramIndexOffset, real.ramIndexOffset + uint64(len(real.ramIndexBytes))}
+		entries := byteRange{real.payloadRegionOffset, real.metadataRegionOffset}
 		meta := byteRange{real.metadataRegionOffset, uint64(len(data)) - footerSize}
 
 		cache := slices.Clone(data)
-		for _, r := range []byteRange{ram, meta} {
+		for _, r := range []byteRange{ram, entries, meta} {
 			for i := r.start; i < r.end; i++ {
 				cache[i] ^= 0xFF
 			}
@@ -243,20 +244,23 @@ func TestPrefetchAsksForWhatLookupsRead(t *testing.T) {
 			asked += end - start
 		})
 
-		if all := ram.end - ram.start + meta.end - meta.start; asked*2 > all {
+		if all := ram.end - ram.start + entries.end - entries.start + meta.end - meta.start; asked*2 > all {
 			t.Fatalf("%v: asked for %d of %d bytes, not much less than everything", algo, asked, all)
 		}
+		realPI, _ := real.WithPayload()
+		pi, _ := idx.WithPayload()
 		for _, key := range batch {
-			want, _ := real.QueryRank(key)
-			if got, err := idx.QueryRank(key); err != nil || got != want {
-				t.Fatalf("%v: a lookup read bytes prefetch did not ask for: rank %d, %v; want %d", algo, got, err, want)
+			wantRank, wantPayload, _ := realPI.QueryPayload(key)
+			if rank, payload, err := pi.QueryPayload(key); err != nil || rank != wantRank || payload != wantPayload {
+				t.Fatalf("%v: a lookup read bytes prefetch did not ask for: rank %d, payload %d, %v; want %d, %d",
+					algo, rank, payload, err, wantRank, wantPayload)
 			}
 		}
 	}
 }
 
 // QueryBatch must give each key the answer the single-key lookups give it, in
-// its own slot, whether the lookups run in turn or in goroutines.
+// its own slot.
 func TestQueryBatch(t *testing.T) {
 	keys := generateRandomKeys(newTestRNG(t), 10_000, MinKeySize)
 	payloads := make([]uint64, len(keys))
@@ -269,18 +273,15 @@ func TestQueryBatch(t *testing.T) {
 			idx := buildAndOpenUnsorted(t, keys, payloads, t.TempDir(),
 				WithAlgorithm(algo), WithPayload(sizes.payload), WithFingerprint(sizes.fingerprint))
 			pi, _ := idx.WithPayload()
-			for _, concurrency := range []int{1, 4} {
-				for i, got := range idx.QueryBatch(batch, concurrency) {
-					var want Result
-					if sizes.payload == 0 {
-						want.Rank, want.Err = idx.QueryRank(batch[i])
-					} else {
-						want.Rank, want.Payload, want.Err = pi.QueryPayload(batch[i])
-					}
-					if got != want {
-						t.Fatalf("%v, %+v, concurrency %d, key %d: got %+v, want %+v",
-							algo, sizes, concurrency, i, got, want)
-					}
+			for i, got := range idx.QueryBatch(batch) {
+				var want Result
+				if sizes.payload == 0 {
+					want.Rank, want.Err = idx.QueryRank(batch[i])
+				} else {
+					want.Rank, want.Payload, want.Err = pi.QueryPayload(batch[i])
+				}
+				if got != want {
+					t.Fatalf("%v, %+v, key %d: got %+v, want %+v", algo, sizes, i, got, want)
 				}
 			}
 			idx.Close()

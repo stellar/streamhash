@@ -127,7 +127,7 @@ rank, payload, err := pi.QueryPayload(key)
 fp, err := streamhash.Fingerprint(key)
 
 // Batch mode: look up many keys together, so reads from a cold page cache overlap
-results := idx.QueryBatch(keys, 8) // results[i] answers keys[i]; up to 8 lookups at a time
+results := idx.QueryBatch(keys) // results[i] answers keys[i]
 ```
 
 ### Pre-hashing non-uniform keys

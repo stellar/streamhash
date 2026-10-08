@@ -1,6 +1,7 @@
 package streamhash
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"math/bits"
 	"os"
 	"slices"
-	"sync"
 	"sync/atomic"
 
 	"github.com/cespare/xxhash/v2"
@@ -270,43 +270,31 @@ type Result struct {
 	Err     error  // as QueryRank returns, e.g. ErrNotFound
 }
 
-// QueryBatch looks up keys together. On a cold page cache it first starts
-// reading every key's RAM index entry and block metadata at once, rather than
-// one lookup after another. Then up to concurrency lookups run at a time, so
-// their payload and fingerprint reads overlap too; below 2, they run in turn.
-// results[i] is the answer for keys[i].
-func (idx *Index) QueryBatch(keys [][]byte, concurrency int) []Result {
+// QueryBatch looks up keys together. On a cold page cache it starts every
+// key's reads at once, one dependent step at a time (RAM index entries, block
+// metadata, then fingerprint and payload entries), rather than one lookup after
+// another. results[i] is the answer for keys[i].
+func (idx *Index) QueryBatch(keys [][]byte) []Result {
 	if canAdvise && idx.mmap != nil && !idx.closed.Load() {
 		idx.prefetch(keys, func(start, end uint64) { adviseWillNeed(idx.mmap, start, end) })
 	}
 	pi, _ := idx.WithPayload() // nil if the index has no payloads
 	results := make([]Result, len(keys))
-	lookUp := func(from, to int) {
-		for i := from; i < to; i++ {
-			r := &results[i]
-			if pi == nil {
-				r.Rank, r.Err = idx.QueryRank(keys[i])
-			} else {
-				r.Rank, r.Payload, r.Err = pi.QueryPayload(keys[i])
-			}
+	for i, key := range keys {
+		r := &results[i]
+		if pi == nil {
+			r.Rank, r.Err = idx.QueryRank(key)
+		} else {
+			r.Rank, r.Payload, r.Err = pi.QueryPayload(key)
 		}
 	}
-	workers := min(concurrency, len(keys))
-	if workers < 2 {
-		lookUp(0, len(keys))
-		return results
-	}
-	per := (len(keys) + workers - 1) / workers
-	var wg sync.WaitGroup
-	for from := 0; from < len(keys); from += per {
-		wg.Go(func() { lookUp(from, min(from+per, len(keys))) })
-	}
-	wg.Wait()
 	return results
 }
 
-// prefetch hands advise the ranges the keys' lookups read, asking for the RAM
-// index entries before reading them to find the metadata.
+// prefetch hands advise the ranges the keys' lookups read, each step reading
+// what the one before asked for: RAM index entries locate the metadata, which
+// locates the entries. Page faults hold one of Go's GOMAXPROCS slots while they
+// wait, so these reads are asked for together rather than from goroutines.
 func (idx *Index) prefetch(keys [][]byte, advise func(start, end uint64)) {
 	blocks := make([]uint32, 0, len(keys))
 	for _, key := range keys {
@@ -340,6 +328,27 @@ func (idx *Index) prefetch(keys [][]byte, advise func(start, end uint64)) {
 			ranges = append(ranges, byteRange{start, end})
 		}
 	}
+	willNeed(ranges, advise)
+
+	// Ranks are decoded from the metadata, so this waits for the reads above.
+	if idx.entrySize == 0 {
+		return
+	}
+	ranges = ranges[:0]
+	for _, key := range keys {
+		if len(key) < MinKeySize {
+			continue
+		}
+		rank, err := idx.locate(key)
+		if err != nil || rank >= idx.header.TotalKeys {
+			continue
+		}
+		start := idx.payloadRegionOffset + rank*uint64(idx.entrySize)
+		if end := start + uint64(idx.entrySize); end <= uint64(len(idx.data)) {
+			ranges = append(ranges, byteRange{start, end})
+		}
+	}
+	slices.SortFunc(ranges, func(a, b byteRange) int { return cmp.Compare(a.start, b.start) })
 	willNeed(ranges, advise)
 }
 
@@ -381,7 +390,13 @@ func (idx *Index) verifyFingerprintSeparated(k0, k1 uint64, globalRank uint64) (
 
 // queryInternal is the internal query implementation.
 // Uses the algorithm-specific decoder to compute slots.
-func (idx *Index) queryInternal(key []byte) (uint64, error) {
+func (idx *Index) queryInternal(key []byte) (uint64, error) { return idx.lookup(key, true) }
+
+// locate is queryInternal without the fingerprint check: it reads the key's RAM
+// index entry and block metadata, but not its entry.
+func (idx *Index) locate(key []byte) (uint64, error) { return idx.lookup(key, false) }
+
+func (idx *Index) lookup(key []byte, checkFingerprint bool) (uint64, error) {
 	// Step 1: Parse key and route to block
 	// k0, k1 are little-endian for hash computation
 	// prefix is big-endian for monotonic block routing
@@ -432,7 +447,7 @@ func (idx *Index) queryInternal(key []byte) (uint64, error) {
 	// Step 5: Compute global rank and verify fingerprint
 	globalRank := baseRank + uint64(localSlot)
 
-	if idx.header.hasFingerprint() {
+	if checkFingerprint && idx.header.hasFingerprint() {
 		ok, err := idx.verifyFingerprintSeparated(k0, k1, globalRank)
 		if err != nil {
 			return 0, err
