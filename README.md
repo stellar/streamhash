@@ -163,7 +163,7 @@ if err := builder.Finish(); err != nil {
 rank, err := idx.QueryRank(streamhash.PreHash(originalKey))
 ```
 
-> **Security note:** pre-hashing defends against *accidental* skew, not a deliberate adversary. `PreHash` is unkeyed, so an attacker can compute it too, and `WithGlobalSeed` does not affect block routing or fingerprints. If an attacker can influence the keys you build with or look up, hash every key with a secret first (e.g. SipHash or HMAC), and use the result both to build and to query. See [`streamhash-spec.md`](streamhash-spec.md) §7.7.
+> **Security note:** pre-hashing defends against *accidental* skew, not a deliberate adversary. `PreHash` is unkeyed, so an attacker can compute it too, and `WithGlobalSeed` does not affect block routing or fingerprints. If an attacker can influence the keys you build with or look up, hash every key with a secret first, using a keyed hash with at least 16 bytes of output (e.g. 128-bit SipHash or HMAC-SHA256), and use the result both to build and to query. See [`streamhash-spec.md`](streamhash-spec.md) §7.7.
 
 ## Build Options
 
