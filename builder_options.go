@@ -44,7 +44,8 @@ func WithPayload(sizeBytes int) BuildOption {
 
 // WithFingerprint enables fingerprint verification. Size must be 0-4 bytes.
 // 0 means no fingerprints (the default). With fingerprints enabled,
-// QueryRank and QueryPayload return ErrNotFound for non-member keys.
+// QueryRank and QueryPayload return ErrNotFound for most non-member keys;
+// streamhash-spec.md §7.2 says how many get through.
 func WithFingerprint(sizeBytes int) BuildOption {
 	return func(c *buildConfig) {
 		c.fingerprintSize = sizeBytes
