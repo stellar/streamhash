@@ -107,6 +107,12 @@ func extractFingerprint(k0, k1 uint64, fpSize int) uint32 {
 // store the fingerprint with it and check it on lookup. Pass the same bytes you
 // build and query the index with: PreHash(key), if you pre-hash.
 //
+// The fingerprint uses no secret, so it is not a security check: someone who
+// knows one key in the index can make up other keys that pass it. If attackers
+// can choose the keys you look up, hash every key with a secret first, both to
+// build and to query, using a keyed hash with at least 16 bytes of output such
+// as 128-bit SipHash (streamhash-spec.md §7.7).
+//
 // Returns ErrKeyTooShort if key is shorter than MinKeySize.
 func Fingerprint(key []byte) (uint32, error) {
 	if len(key) < MinKeySize {
