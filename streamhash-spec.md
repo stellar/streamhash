@@ -803,7 +803,7 @@ Keys must be at least 16 bytes; the first 16 become `k0` and `k1`. There are two
 | >0 | 0 | Payload | payload (no verification) |
 | >0 | >0 | Payload + verification | payload, or `ErrNotFound` |
 
-A non-member passes the fingerprint check with probability `2^(−8 × FingerprintSize)` — its expected false-positive rate, not a flaw.
+A random non-member passes the fingerprint check with probability `2^(−8 × FingerprintSize)`. This rate does not hold for keys made up on purpose to pass the check (§7.7).
 
 ### 7.3. Dataset size limits
 
@@ -885,17 +885,18 @@ For end-to-end integrity, the footer's two unseeded-xxHash64 region hashes (§3.
 StreamHash assumes uniformly random input. Consequences of violating that:
 
 - **Non-uniform keys** collect in a small number of blocks. Each block has a maximum number of keys, sized for uniform input. Exceed it and the build stops with `ErrBlockOverflow`. If your keys are structured or correlated, hash them first with xxHash3-128 (`PreHash`); this restores uniformity. `PreHash` protects against *accidental* skew. It does not protect against an attacker — see the next item.
-- **Adversarial keys.** A key's block is a fixed, public function of the key — no secret is involved:
+- **Attacks on the build.** A key's block is a fixed, public function of the key, with no secret involved:
 
   ```
   blockIdx = FastRange32(ReverseBytes64(key[0:8]), numBlocks)
   ```
 
-  The only inputs are the first 8 bytes of the key and the block count, both public, so anyone can compute which block any key lands in. `globalSeed` does not change this: it applies only to hashing inside a block, so a random `globalSeed` gives no protection here. `PreHash` gives none either, because xxHash3-128 uses no secret and the attacker can compute it too.
+  The only inputs are the first 8 bytes of the key and the block count, both public, so anyone can compute which block any key lands in. `globalSeed` is not an input, so a random `globalSeed` gives no protection here. `PreHash` gives none either, because xxHash3-128 uses no secret and the attacker can compute it too.
 
-  An attacker can therefore make many keys land in one block — either by choosing keys directly, or, when the keys are values they cannot choose (like transaction hashes), by generating many candidates and keeping only those that land in the target block. Enough of them exceeds the block's maximum, and the build stops with `ErrBlockOverflow`. This is a denial of service against index construction, and nothing worse: the build simply aborts and writes no index file (see §7.8), so the attack can only prevent an index from being built — it cannot corrupt one or cause wrong lookups.
+  An attacker can therefore make many keys land in one block. They can choose keys directly, or, when the keys are values they cannot choose (like transaction hashes), generate many candidates and keep only those that land in the target block. Enough of them exceeds the block's maximum, and the build stops with `ErrBlockOverflow`. The index is then never built: the build aborts and writes no index file (see §7.8).
+- **Attacks on lookups.** The fingerprint check catches random non-members, but it is not a security check. Someone who knows one key in the index can make up other keys that pass the check. Looking one up returns the real key's rank and payload instead of `ErrNotFound`. On PTRHash, every key made this way passes. On Bijection, only some do, but all of them do when the real key is alone in its bucket. This works because the fingerprint uses no secret, and neither do the block and bucket a key goes to. A random `globalSeed` does not stop it.
 
-  **Mitigation.** If an untrusted source can influence your keys, transform each key with a secret before indexing it — for example `key' = SipHash(secret, key)`, or any equivalent such as `HMAC(secret, key)`. Build the index over `key'` instead of `key`. Keep `secret` unknown to the untrusted source; if that source can read the index file, keep `secret` outside it (see §7.6). Without the secret an attacker cannot predict a key's block, and so cannot target one.
+**Mitigation.** If an attacker can influence the keys you build with or look up, hash every key with a secret first: `key' = H(secret, key)`, where `H` is a keyed hash with at least 16 bytes of output, such as 128-bit SipHash or HMAC-SHA256. Use `key'` instead of `key` both when you build the index and when you look keys up. Keep `secret` away from the attacker. If the attacker can read the index file, do not store `secret` in it (see §7.6). Without the secret, the attacker cannot tell which block a key will land in, and cannot make up keys that pass the fingerprint check any more often than random keys do.
 
 ### 7.8. Durability and compatibility
 
