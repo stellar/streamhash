@@ -7,8 +7,8 @@ require (
 	github.com/edsrzf/mmap-go v1.2.0
 	github.com/spaolacci/murmur3 v1.1.0
 	github.com/zeebo/xxh3 v1.1.0
-	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sync v0.24.0
+	golang.org/x/sys v0.49.0
 )
 
 require github.com/klauspost/cpuid/v2 v2.2.10 // indirect
