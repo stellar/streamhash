@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"sync/atomic"
 
 	"github.com/cespare/xxhash/v2"
 )
@@ -46,6 +47,22 @@ type indexWriter struct {
 	// State
 	keyCount   uint64
 	blockCount uint32
+
+	// unsynced counts the bytes written since writeback last started; workers
+	// writing payloads add to it concurrently.
+	unsynced atomic.Int64
+}
+
+// wrote counts n bytes written, and every cfg.bytesPerSync of them starts
+// writeback of the file.
+func (iw *indexWriter) wrote(n int) {
+	if iw.cfg.bytesPerSync <= 0 {
+		return
+	}
+	if iw.unsynced.Add(int64(n)) >= int64(iw.cfg.bytesPerSync) {
+		iw.unsynced.Store(0)
+		startWriteback(iw.file)
+	}
 }
 
 // newIndexWriter creates a new pwrite-based index writer using separated layout.
@@ -133,8 +150,11 @@ func (iw *indexWriter) writePayloadsDirect(data []byte, offset uint64) error {
 	if absoluteOffset+uint64(len(data)) > iw.metadataRegionOffset {
 		return fmt.Errorf("writePayloadsDirect: write exceeds payload region boundary")
 	}
-	_, err := iw.file.WriteAt(data, int64(absoluteOffset))
-	return err
+	if _, err := iw.file.WriteAt(data, int64(absoluteOffset)); err != nil {
+		return err
+	}
+	iw.wrote(len(data))
+	return nil
 }
 
 // foldPayloadHash folds a per-block payload hash into the streaming payload hasher.
@@ -165,6 +185,7 @@ func (iw *indexWriter) recordAndWriteMetadata(metadata []byte) error {
 		if _, err := iw.file.WriteAt(metadata, int64(iw.metadataWriteOffset)); err != nil {
 			return err
 		}
+		iw.wrote(len(metadata))
 		if _, err := iw.metadataHasher.Write(metadata); err != nil {
 			panic("hash.Hash.Write returned unexpected error: " + err.Error())
 		}
@@ -202,6 +223,7 @@ func (iw *indexWriter) commitBlockWithData(metadata []byte, payloads []byte, num
 		if _, err := iw.file.WriteAt(payloads, int64(payloadOffset)); err != nil {
 			return err
 		}
+		iw.wrote(len(payloads))
 		iw.foldPayloadHash(xxhash.Sum64(payloads))
 	} else {
 		iw.foldPayloadHash(xxhash.Sum64(nil))
