@@ -61,6 +61,8 @@ if err := builder.Finish(); err != nil {
 }
 ```
 
+Keys that are already in sorted files (written with `SortedFileWriter`, see [`streamhash-spec.md`](streamhash-spec.md) §3.9) build without being merged: `BuildFromSortedFiles(ctx, "index.idx", paths, opts...)` reads the files once, in stripes of blocks that the workers solve in parallel, and produces the same index. It uses about 256 MiB whatever the number of keys or files.
+
 ### Building an index (unsorted input)
 
 ```go
