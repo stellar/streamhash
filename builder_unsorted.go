@@ -552,7 +552,7 @@ type UnsortedBuilder struct {
 // totalKeys may be 0: the result is a valid empty index whose every QueryRank
 // returns ErrNotFound.
 func NewUnsortedBuilder(ctx context.Context, output string, totalKeys uint64, tempDir string, opts ...BuildOption) (*UnsortedBuilder, error) {
-	b, err := newBuilder(ctx, output, totalKeys, opts...)
+	b, err := newBuilder(ctx, output, totalKeys, newBuildConfig(opts))
 	if err != nil {
 		return nil, err
 	}

@@ -451,6 +451,8 @@ Zero bytes pad the header to `RecordsOffset = ceil((20 + MetadataLen) / 4096) ×
 
 **Validation.** A file's size must be exactly `RecordsOffset + Count × (16 + PayloadSize)`. A reader checks this by dividing the size, never by multiplying `Count`, so a corrupt `Count` cannot overflow the arithmetic and pass. The writer writes `Count` after the records, then syncs. §7.5 lists the errors.
 
+**Building an index from sorted files.** `BuildFromSortedFiles` builds an index from any number of sorted files that share a payload size, without merging them. The index is byte-identical to the one a `SortedBuilder` builds from the same keys in block order (§6.1), because the order of the keys inside a block does not change the index. The build splits the blocks into **stripes** of `B` consecutive blocks holding about `S` keys each, with `S` between 32K and 256K, chosen so the stripes in flight fit in 128 MiB. Stripe `s` covers blocks `[s·B, (s+1)·B)` and so, by §2.2, the prefixes `[ceil(s·B·2^64 / numBlocks), ceil((s+1)·B·2^64 / numBlocks))`; the last stripe has no upper bound. Every file is in key order, so it holds a stripe's keys as one contiguous run. One goroutine gathers each stripe in turn: in each file it finds where the run ends, with a galloping search, and copies the run out. The files are read once, sequentially and directly where the filesystem allows it, through fixed aligned buffers of 64 KiB to 4 MiB, two or three per file within 128 MiB. Each worker (`WithWorkers`) takes whole stripes: it sorts a stripe's records by block with a counting sort, solves the blocks, and hands them to the writer of §6.3, which commits them in block order. With one worker, the calling goroutine gathers, solves and writes each stripe itself. While sorting, a worker checks that each file's run is in order and that every record's block is in the stripe; a record that fails either check means a file out of order (`ErrUnsortedInput`). A duplicate key fails its block (`ErrDuplicateKey`), and the build fails if the records it read do not add up to the headers' counts (`ErrKeyCountMismatch`).
+
 ---
 
 ## 4. Algorithm: Bijection
@@ -756,6 +758,7 @@ The framework offers three build paths. All produce **byte-identical** output fo
 - **Sorted** (`NewSortedBuilder`) — keys arrive in block-sorted prefix order; true streaming, lowest RAM, no temp disk.
 - **Unsorted** (`NewUnsortedBuilder`) — keys arrive in any order; buffered to temp files, then read back in block order.
 - **Parallel** (`WithWorkers(n)`) — available for both, building blocks concurrently.
+- **From sorted files** (`BuildFromSortedFiles`) — keys come from sorted files (§3.9), read in stripes of blocks and never merged; the same output as sorted mode.
 
 All paths share the block model of §2: route each key, accumulate a block's keys, hand the block to the algorithm's solver, write the metadata, advance.
 
@@ -909,11 +912,11 @@ An index with `N = 0` keys is not an error: it builds successfully, and every `Q
 | Error | Condition |
 |-------|-----------|
 | `ErrTruncatedFile` | file shorter than its header, or than its `Count` records |
-| `ErrKeyCountMismatch` | file longer than its header and `Count` records |
+| `ErrKeyCountMismatch` | file longer than its header and `Count` records; or a build read a different number of records than the files count |
 | `ErrInvalidMagic` | magic ≠ `0x53545346` |
 | `ErrInvalidVersion` | version ≠ `0x0001` |
 | `ErrCorruptedIndex` | PayloadSize > 8, or MetadataLen > 65,536 |
-| `ErrUnsortedInput` | a key sorts before the key before it, when it is written, merged or read |
+| `ErrUnsortedInput` | a key sorts before the key before it, when it is written, merged, read or built from; or a build finds a record outside its stripe |
 
 ### 7.6. Integrity and corruption safety
 
