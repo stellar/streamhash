@@ -11,7 +11,8 @@ type BuildOption func(*buildConfig)
 type buildConfig struct {
 	workers         int
 	payloadSize     int
-	fingerprintSize int // in bytes
+	payloadSet      bool // WithPayload was given
+	fingerprintSize int  // in bytes
 	globalSeed      uint64
 	userMetadata    []byte
 	unsortedTempDir string // temp directory for unsorted partition files
@@ -28,6 +29,15 @@ func defaultBuildConfig() *buildConfig {
 	}
 }
 
+// newBuildConfig applies opts to the default configuration.
+func newBuildConfig(opts []BuildOption) *buildConfig {
+	cfg := defaultBuildConfig()
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	return cfg
+}
+
 // WithWorkers sets the number of parallel workers for block building during Finish.
 func WithWorkers(n int) BuildOption {
 	return func(c *buildConfig) {
@@ -40,6 +50,7 @@ func WithWorkers(n int) BuildOption {
 func WithPayload(sizeBytes int) BuildOption {
 	return func(c *buildConfig) {
 		c.payloadSize = sizeBytes
+		c.payloadSet = true
 	}
 }
 

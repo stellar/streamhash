@@ -47,9 +47,11 @@ type blockResult struct {
 	err         error
 }
 
-// initParallelWorkers initializes channels, pools, and starts worker/writer goroutines
-// for parallel building. Used by both sorted parallel mode and unsorted parallel mode.
-func (b *builder) initParallelWorkers() {
+// startPipeline creates the parallel pipeline's channels and pools, and
+// starts its writer goroutine and b.workers goroutines running worker, which
+// send blockResults on resultChan and return once workerCtx is done. Used by
+// sorted parallel mode, unsorted parallel mode and BuildFromSortedFiles.
+func (b *builder) startPipeline(worker func() error) {
 	b.workChan = make(chan blockWork, b.workers*workChanBufferMultiplier)
 	b.resultChan = make(chan blockResult, b.workers*workChanBufferMultiplier)
 	b.writerDone = make(chan error, 1)
@@ -67,13 +69,12 @@ func (b *builder) initParallelWorkers() {
 		return make([]byte, metadataBufSize)
 	}
 
-	// Start worker goroutines.
 	// Wrap in explicit cancel so shutdownWorkers can unblock workers stuck on resultChan.
 	ctx, cancel := context.WithCancel(b.ctx)
 	b.workerCancel = cancel
 	b.workerGroup, b.workerCtx = errgroup.WithContext(ctx)
 	for range b.workers {
-		b.workerGroup.Go(b.runWorker)
+		b.workerGroup.Go(worker)
 	}
 
 	// Start writer goroutine
@@ -164,20 +165,76 @@ func (b *builder) dispatchEmptyBlock(blockID uint32) error {
 	return b.dispatchBlockWork(blockID, nil, false)
 }
 
+// blockSolver is a worker's block builder, with the payload buffer it reuses
+// across blocks.
+type blockSolver struct {
+	b           *builder
+	blk         blockBuilder
+	payloadsBuf []byte
+}
+
+func (b *builder) newBlockSolver() (*blockSolver, error) {
+	blk, err := newBlockBuilder(b.cfg.algorithm, b.cfg.totalKeys, b.cfg.globalSeed, b.cfg.payloadSize, b.cfg.fingerprintSize)
+	if err != nil {
+		return nil, err
+	}
+	return &blockSolver{b: b, blk: blk}, nil
+}
+
+// loadBlock resets blk and adds entries to it, computing their fingerprints
+// from k0 and k1.
+func (b *builder) loadBlock(blk blockBuilder, entries []routedEntry) {
+	fpSize := b.cfg.fingerprintSize
+	blk.Reset()
+	for _, e := range entries {
+		blk.AddKey(e.k0, e.k1, e.payload, extractFingerprint(e.k0, e.k1, fpSize))
+	}
+}
+
+// build solves the loaded block as blockID, writes its payloads after the
+// keysBefore keys of the blocks before it, and returns the result for the
+// writer. The metadata buffer comes from the pool; the writer returns it.
+func (s *blockSolver) build(blockID uint32, keysBefore uint64) blockResult {
+	b := s.b
+	entrySize := b.cfg.payloadSize + b.cfg.fingerprintSize
+	payloadsNeeded := s.blk.KeysAdded() * entrySize
+	if cap(s.payloadsBuf) < payloadsNeeded {
+		s.payloadsBuf = make([]byte, payloadsNeeded)
+	}
+	payloads := s.payloadsBuf[:payloadsNeeded]
+	metadataBuf := b.metadataPool.Get().([]byte)
+	metadataLen, _, numKeys, err := s.blk.BuildSeparatedInto(metadataBuf, payloads)
+	result := blockResult{blockID: blockID, metadata: metadataBuf[:metadataLen], numKeys: numKeys, err: err}
+	if err == nil {
+		// Hash and write the payloads while they are hot in CPU cache.
+		result.payloadHash = xxhash.Sum64(payloads)
+		result.err = b.iw.writePayloadsDirect(payloads, keysBefore*uint64(entrySize))
+	}
+	return result
+}
+
+// sendResult hands a block's result to the writer and returns the block's
+// error, if any, for the worker to return. A block build error must
+// propagate to the errgroup, not just ride along in blockResult.err:
+// returning it cancels workerCtx, which releases any peer workers blocked
+// sending on resultChan after the writer exits on the first error --
+// otherwise they (and drainParallelPipeline's workerGroup.Wait) deadlock.
+// Wait then surfaces this error to the build.
+func (b *builder) sendResult(result blockResult) error {
+	select {
+	case b.resultChan <- result:
+		return result.err
+	case <-b.workerCtx.Done():
+		return b.workerCtx.Err()
+	}
+}
+
 // runWorker is the worker goroutine that builds blocks in parallel.
 func (b *builder) runWorker() error {
-	// Create block builder for this worker
-	blkBuilder, err := newBlockBuilder(b.cfg.algorithm, b.cfg.totalKeys, b.cfg.globalSeed, b.cfg.payloadSize, b.cfg.fingerprintSize)
+	solver, err := b.newBlockSolver()
 	if err != nil {
 		return err
 	}
-
-	fpSize := b.cfg.fingerprintSize
-	entrySize := b.cfg.payloadSize + fpSize
-
-	// Pre-allocate reusable payload buffer (grows as needed, reused across blocks)
-	// Metadata buffer is NOT reused because it's sent through channel
-	var payloadsBuf []byte
 
 	for work := range b.workChan {
 		select {
@@ -190,98 +247,26 @@ func (b *builder) runWorker() error {
 		default:
 		}
 
-		var metadataBuf []byte
-		var numKeys int
-		var payloadHash uint64
-		var buildErr error
+		b.loadBlock(solver.blk, work.entries)
 
-		if len(work.entries) == 0 {
-			// Empty block: reset builder and build empty metadata
-			blkBuilder.Reset()
-			metadataBuf = b.metadataPool.Get().([]byte)
-			var metadataLen int
-			metadataLen, _, _, buildErr = blkBuilder.BuildSeparatedInto(metadataBuf, nil)
-			metadataBuf = metadataBuf[:metadataLen]
-			numKeys = 0
-			// Empty block contributes hash of empty slice (deterministic)
-			payloadHash = xxhash.Sum64(nil)
-		} else {
-			// Reset and populate the builder, computing fingerprints from k0/k1
-			blkBuilder.Reset()
-			for _, e := range work.entries {
-				blkBuilder.AddKey(e.k0, e.k1, e.payload, extractFingerprint(e.k0, e.k1, fpSize))
-			}
-
-			// Signal that entries are no longer being read. This allows the
-			// flatBuf backing the entries to be safely reused for the next
-			// partition read (fencing for unsorted parallel mode).
-			if work.fenceWg != nil {
-				work.fenceWg.Done()
-			}
-
-			numKeysInBlock := len(work.entries)
-			payloadsNeeded := numKeysInBlock * entrySize
-
-			// Reuse payload buffer (grows if needed)
-			if cap(payloadsBuf) < payloadsNeeded {
-				payloadsBuf = make([]byte, payloadsNeeded)
-			} else {
-				payloadsBuf = payloadsBuf[:payloadsNeeded]
-			}
-
-			// Get metadata buffer from pool (returned to pool by writer after use)
-			metadataBuf = b.metadataPool.Get().([]byte)
-
-			var metadataLen int
-			metadataLen, _, numKeys, buildErr = blkBuilder.BuildSeparatedInto(metadataBuf, payloadsBuf)
-			if buildErr == nil {
-				metadataBuf = metadataBuf[:metadataLen]
-
-				// Compute payload hash and write payloads while data is hot in CPU cache
-				if payloadsNeeded > 0 {
-					// Hash payload buffer before writing via pwrite
-					payloadHash = xxhash.Sum64(payloadsBuf[:payloadsNeeded])
-					// Write payloads via pwrite, then buffer can be reused
-					payloadOffset := work.keysBefore * uint64(entrySize)
-					if werr := b.iw.writePayloadsDirect(payloadsBuf, payloadOffset); werr != nil {
-						buildErr = werr
-					}
-				} else {
-					// MPHF-only mode: no payloads, hash empty slice
-					payloadHash = xxhash.Sum64(nil)
-				}
-			}
-
-			// Return entry slice to pool only if it was pool-allocated.
-			// Unsorted mode dispatches flatBuf-backed slices with pooled=false
-			// and uses fenceWg for lifetime management instead.
-			if work.pooled {
-				b.putEntrySlice(work.entries)
-			}
+		// Signal that entries are no longer being read. This allows the
+		// flatBuf backing the entries to be safely reused for the next
+		// partition read (fencing for unsorted parallel mode).
+		if work.fenceWg != nil {
+			work.fenceWg.Done()
 		}
 
-		// Send result to writer (metadata + payload hash)
-		select {
-		case b.resultChan <- blockResult{
-			blockID:     work.blockID,
-			metadata:    metadataBuf,
-			numKeys:     numKeys,
-			payloadHash: payloadHash,
-			err:         buildErr,
-		}:
-		case <-b.workerCtx.Done():
-			return b.workerCtx.Err()
+		result := solver.build(work.blockID, work.keysBefore)
+
+		// Return entry slice to pool only if it was pool-allocated.
+		// Unsorted mode dispatches flatBuf-backed slices with pooled=false
+		// and uses fenceWg for lifetime management instead.
+		if work.pooled {
+			b.putEntrySlice(work.entries)
 		}
 
-		// A block build error must propagate to the errgroup, not just ride
-		// along in blockResult.err. Returning it cancels workerCtx, which
-		// releases any peer workers blocked sending on resultChan after the
-		// writer exits on the first error -- otherwise they (and
-		// drainParallelPipeline's workerGroup.Wait) deadlock. Wait then surfaces
-		// this error to Finish(). Covers both the sorted and unsorted-parallel
-		// paths, which share this worker pool and drainParallelPipeline.
-		if buildErr != nil {
-			return buildErr
+		if err := b.sendResult(result); err != nil {
+			return err
 		}
 	}
 
@@ -396,37 +381,36 @@ func (b *builder) finishParallel() error {
 	return b.drainParallelPipeline()
 }
 
-// drainParallelPipeline closes the work channel, waits for workers and writer
-// to finish, then finalizes the index.
+// drainParallelPipeline closes the work channel, waits for the workers and
+// the writer to finish, then finalizes the index, unless one of them failed
+// or the pipeline was canceled.
 func (b *builder) drainParallelPipeline() error {
 	// Close work channel to signal workers we're done
 	close(b.workChan)
 	b.workersShutDown.Store(true) // Prevents double-close in Close()/shutdownWorkers()
 
-	// Wait for all workers to finish
-	if werr := b.workerGroup.Wait(); werr != nil {
-		close(b.resultChan)
-		// Prefer the writer's error: when the writer initiates the failure it
-		// cancels workerCtx, so workerGroup.Wait returns a bare context.Canceled
-		// while the real cause (e.g. an ENOSPC metadata write, or the block
-		// buildErr) sits in writerDone. Fall back to the worker error only if the
-		// writer reported none (e.g. a worker setup failure).
-		cause := <-b.writerDone
-		if cause == nil {
-			cause = fmt.Errorf("worker error: %w", werr)
-		}
+	// Read the cancellation before Wait, which cancels workerCtx itself.
+	canceled := b.workerCtx.Err()
+	werr := b.workerGroup.Wait()
+	close(b.resultChan)
+	cause := <-b.writerDone
+	// A block build error reaches writerDone through failWriter and is the
+	// worker's error too; the writer's copy is the cause as it is, and werr
+	// is then a bare context.Canceled. The prefixes name where an error of
+	// the pipeline's own arose.
+	switch {
+	case cause != nil && werr == nil:
+		cause = fmt.Errorf("writer error: %w", cause)
+	case cause == nil && werr != nil:
+		cause = fmt.Errorf("worker error: %w", werr)
+	case cause == nil:
+		// A canceled pipeline never finalizes: its producer may have stopped
+		// before dispatching every block.
+		cause = canceled
+	}
+	if cause != nil {
 		return errors.Join(cause, b.cleanup())
 	}
-
-	// Close result channel to signal writer we're done
-	close(b.resultChan)
-
-	// Wait for writer to finish
-	if err := <-b.writerDone; err != nil {
-		primaryErr := fmt.Errorf("writer error: %w", err)
-		return errors.Join(primaryErr, b.cleanup())
-	}
-
 	return b.finalizeIndex()
 }
 

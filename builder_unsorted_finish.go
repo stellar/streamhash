@@ -357,7 +357,7 @@ func (ub *UnsortedBuilder) finishUnsortedFastPath() error {
 	}
 
 	if b.workers > 1 {
-		b.initParallelWorkers()
+		b.startPipeline(b.runWorker)
 	}
 
 	fpSize := b.cfg.fingerprintSize
@@ -512,7 +512,7 @@ func (ub *UnsortedBuilder) finishUnsortedSingleThreaded() error {
 // per-partition channels.
 func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 	b := ub.b
-	b.initParallelWorkers()
+	b.startPipeline(b.runWorker)
 
 	u := ub.unsortedBuf
 	numParts := u.numPartitions
