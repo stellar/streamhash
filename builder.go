@@ -246,9 +246,21 @@ func (b *builder) resetCurrentBuilder() {
 	b.builder.Reset()
 }
 
+// yield calls the WithYield function, if one was given. It runs before every
+// block is built, empty blocks included.
+func (b *builder) yield(ctx context.Context) error {
+	if b.cfg.yield == nil {
+		return nil
+	}
+	return b.cfg.yield(ctx)
+}
+
 // commitEmptyBlock writes an empty block's metadata directly to the index.
 // Resets the builder, builds empty metadata, and commits via pwrite.
 func (b *builder) commitEmptyBlock() error {
+	if err := b.yield(b.ctx); err != nil {
+		return err
+	}
 	b.builder.Reset()
 	metadataNeeded := b.estimateMetadataSize()
 	if cap(b.metadataBuf) < metadataNeeded {
@@ -309,6 +321,9 @@ func (b *builder) commitTrailingEmptyBlocksAndFinalize() error {
 
 // buildBlock builds the current block into reusable buffers and writes via pwrite.
 func (b *builder) buildBlock() error {
+	if err := b.yield(b.ctx); err != nil {
+		return err
+	}
 	numKeys := b.currentBlockKeysAdded()
 	entrySize := b.cfg.payloadSize + b.cfg.fingerprintSize
 

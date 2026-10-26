@@ -1,5 +1,7 @@
 package streamhash
 
+import "context"
+
 const (
 	maxPayloadSize     = 8
 	maxFingerprintSize = 4
@@ -18,6 +20,7 @@ type buildConfig struct {
 	unsortedTempDir string // temp directory for unsorted partition files
 	algorithm       Algorithm
 	bytesPerSync    int // start writeback of the index every this many bytes written; 0 = off
+	yield           func(context.Context) error
 
 	totalKeys uint64 // Pre-known key count for single-pass builds
 }
@@ -86,6 +89,19 @@ func WithMetadata(data []byte) BuildOption {
 func WithBytesPerSync(n int) BuildOption {
 	return func(c *buildConfig) {
 		c.bytesPerSync = n
+	}
+}
+
+// WithYield makes the build yield to other work: before each block, the
+// goroutine about to build it calls yield and goes on when it returns. A
+// yield that blocks holds the build back, and one that returns an error
+// fails the build with it. The context is the build's, done once the build
+// is canceled or has failed. Nothing is held while yield blocks: a build at
+// rest holds only its buffers and its open files. The default never yields,
+// and WithYield(nil) never yields: it is the same as not passing the option.
+func WithYield(yield func(ctx context.Context) error) BuildOption {
+	return func(c *buildConfig) {
+		c.yield = yield
 	}
 }
 
