@@ -139,13 +139,20 @@ func TestMergeSortedFilesRejectsPayloadSizes(t *testing.T) {
 func TestMergeSortedFilesRejectsOutputAmongInputs(t *testing.T) {
 	dir := t.TempDir()
 	inputs, _ := writeMergeInputs(t, dir, 3, []int{1000, 2000})
-	before := readFileBytes(t, inputs[1])
+	before, err := os.ReadFile(inputs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
 	// inputs[1], spelled differently.
 	output := dir + string(filepath.Separator) + "." + string(filepath.Separator) + filepath.Base(inputs[1])
 	if err := mergeWithWatchdog(t, context.Background(), output, inputs, SortedFileConfig{PayloadSize: 3}, mergeReadBuffer); err == nil {
 		t.Fatal("a merge into one of its inputs returned no error")
 	}
-	if !bytes.Equal(readFileBytes(t, inputs[1]), before) {
+	after, err := os.ReadFile(inputs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
 		t.Fatal("the merge changed its input")
 	}
 }
