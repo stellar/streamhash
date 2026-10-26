@@ -202,9 +202,13 @@ func (b *builder) loadBlock(blk blockBuilder, entries []routedEntry) {
 
 // build solves the loaded block as blockID, writes its payloads after the
 // keysBefore keys of the blocks before it, and returns the result for the
-// writer. The metadata buffer comes from the pool; the writer returns it.
+// writer. The metadata buffer comes from the pool; the writer returns it. It
+// yields first, and a yield error is the block's result.
 func (s *blockSolver) build(blockID uint32, keysBefore uint64) blockResult {
 	b := s.b
+	if err := b.yield(b.workerCtx); err != nil {
+		return blockResult{blockID: blockID, err: err}
+	}
 	entrySize := b.cfg.payloadSize + b.cfg.fingerprintSize
 	payloadsNeeded := s.blk.KeysAdded() * entrySize
 	if cap(s.payloadsBuf) < payloadsNeeded {
@@ -228,8 +232,15 @@ func (s *blockSolver) build(blockID uint32, keysBefore uint64) blockResult {
 // returning it cancels workerCtx, which releases any peer workers blocked
 // sending on resultChan after the writer exits on the first error --
 // otherwise they (and drainParallelPipeline's workerGroup.Wait) deadlock.
-// Wait then surfaces this error to the build.
+// Wait then surfaces this error to the build. An error once workerCtx is
+// done is not sent: it may only echo the cancellation, as a yield's does,
+// and the writer must not report it in place of the failure.
 func (b *builder) sendResult(result blockResult) error {
+	if result.err != nil {
+		if err := b.workerCtx.Err(); err != nil {
+			return err
+		}
+	}
 	select {
 	case b.resultChan <- result:
 		return result.err
