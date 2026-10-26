@@ -72,7 +72,7 @@ type pipeScenario uint8
 
 const (
 	scenValid     pipeScenario = iota // well-formed input: build must succeed + index is a bijection
-	scenDuplicate                     // a duplicate key: build must fail, not hang
+	scenDuplicate                     // a duplicate key: build must fail with ErrDuplicateKey, not hang
 	scenCancel                        // ctx cancelled mid-build: build must return, not hang
 	scenCount
 )
@@ -209,14 +209,7 @@ func runPipelineScenario(t *testing.T, cfg pipeConfig) {
 		assertBijection(t, indexPath, keys)
 
 	case scenDuplicate:
-		if buildErr == nil {
-			t.Fatalf("%s: expected a duplicate-key error, got nil", cfg)
-		}
-		// The precise cause is ErrDuplicateKey; in some interleavings the
-		// pipeline surfaces a context cancellation from its own teardown first.
-		// Both mean the build failed cleanly; only nil or an unrelated error is
-		// a bug.
-		if !errors.Is(buildErr, sherr.ErrDuplicateKey) && !errors.Is(buildErr, context.Canceled) {
+		if !errors.Is(buildErr, sherr.ErrDuplicateKey) {
 			t.Fatalf("%s: expected ErrDuplicateKey, got: %v", cfg, buildErr)
 		}
 

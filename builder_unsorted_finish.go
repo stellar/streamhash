@@ -665,7 +665,7 @@ func (ub *UnsortedBuilder) finishUnsortedParallel() error {
 			case b.workChan <- work:
 			case <-b.workerCtx.Done():
 				slotFences[slotIdx].Done()
-				return fail(b.workerCtx.Err())
+				return fail(b.pipelineErr())
 			case err := <-b.writerDone:
 				b.writerErr = err
 				slotFences[slotIdx].Done()

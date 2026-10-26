@@ -49,7 +49,7 @@ type builder struct {
 	resultChan      chan blockResult
 	workerGroup     *errgroup.Group
 	workerCtx       context.Context
-	workerCancel    context.CancelFunc // Cancels workerCtx to unblock stuck workers
+	workerCancel    context.CancelCauseFunc // Cancels workerCtx to unblock stuck workers
 	writerDone      chan error
 	writerErr       error
 	workersShutDown atomic.Bool // True once the worker pipeline has been torn down
