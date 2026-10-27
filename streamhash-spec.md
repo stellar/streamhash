@@ -816,7 +816,13 @@ With `WithWorkers(n)`, both sorted and unsorted builds solve blocks concurrently
 
 Throughput scales near-linearly because the serialized step (writing metadata, folding hashes) is cheap relative to solving. The pipeline is carefully torn down on error or cancellation so a failing block, a writer-side I/O error, or a context cancel never deadlocks the pool — any internal failure cancels the worker context exactly once, releasing every parked goroutine.
 
-### 6.4. Thread safety
+### 6.4. Yielding to other work
+
+`WithYield(yield)` lets a build give way to other work between blocks. Before each block, empty blocks included, the goroutine about to build it calls `yield` with the build's context and goes on when it returns. With one worker that is the calling goroutine; with several, it is a worker. A block is about 3,000 keys with Bijection and 31,600 with PTRHash (§7.3), and a `yield` that starts blocking stops each worker at its next block.
+
+While `yield` blocks, the rest of the build stops behind the parked workers: what feeds them stops once their queue is full, and the writer once it has committed the blocks already solved. A parked build holds only its buffers and open files. A `yield` that returns an error fails the build with that error, as a block that fails to build does. The context is done once the build is canceled or has failed, so a `yield` that waits on it returns then.
+
+### 6.5. Thread safety
 
 - **Queries** are thread-safe and lock-free once the index is open: the data is immutable and each query reads an independent block. The RAM index must be fully loaded and visible before concurrent queries begin.
 - **Solvers** are single-threaded; each parallel worker has its own.
