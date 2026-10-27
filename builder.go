@@ -85,17 +85,13 @@ type builder struct {
 // Use WithWorkers(N) to enable parallel building with N workers.
 // With workers > 1, blocks are built in parallel while maintaining
 // the streaming API and O(W × block_size) memory.
-func newBuilder(ctx context.Context, output string, totalKeys uint64, opts ...BuildOption) (*builder, error) {
+func newBuilder(ctx context.Context, output string, totalKeys uint64, cfg *buildConfig) (*builder, error) {
 	// totalKeys == 0 is allowed: numBlocks() floors at 2, so a zero-key build
 	// emits empty blocks and finalizes to a valid empty index.
 	if totalKeys > maxKeys {
 		return nil, sherr.ErrTooManyKeys
 	}
 
-	cfg := defaultBuildConfig()
-	for _, opt := range opts {
-		opt(cfg)
-	}
 	cfg.totalKeys = totalKeys
 
 	if cfg.payloadSize < 0 || cfg.payloadSize > maxPayloadSize {
@@ -389,12 +385,12 @@ type SortedBuilder struct {
 // totalKeys may be 0: the result is a valid empty index whose every QueryRank
 // returns ErrNotFound.
 func NewSortedBuilder(ctx context.Context, output string, totalKeys uint64, opts ...BuildOption) (*SortedBuilder, error) {
-	b, err := newBuilder(ctx, output, totalKeys, opts...)
+	b, err := newBuilder(ctx, output, totalKeys, newBuildConfig(opts))
 	if err != nil {
 		return nil, err
 	}
 	if b.workers > 1 {
-		b.initParallelWorkers()
+		b.startPipeline(b.runWorker)
 		b.pendingEntries = b.getEntrySlice()
 	}
 	return &SortedBuilder{b: b}, nil
