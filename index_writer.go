@@ -11,6 +11,10 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
+// ramIndexBufEntries is how many RAM index entries, about 64 KiB, the writer
+// buffers before writing them out.
+const ramIndexBufEntries = (64 << 10) / ramIndexEntrySize
+
 // indexWriter writes index data to disk via positional *os.File.WriteAt calls.
 // File layout: [Header 64B][UserMetaLen 4B][UserMeta][AlgoConfigLen 4B][AlgoConfig][RAM Index (N+1)×10B][Payload Region][Metadata Region][Footer 32B]
 type indexWriter struct {
@@ -23,13 +27,13 @@ type indexWriter struct {
 	// Variable section offsets
 	userMetadataOffset uint64
 	algoConfigOffset   uint64
-	ramIndexOffset     uint64
 
 	// Write tracking
 	metadataWriteOffset uint64 // Current write position in metadata region
+	ramIndexWriteOffset uint64 // Current write position in RAM index
 
-	// RAM index (built incrementally)
-	ramIndex []ramIndexEntry
+	// Encoded RAM index entries not yet written
+	ramIndexBuf []byte
 
 	// Streaming hashers for incremental hash computation
 	// These hash data while it's hot in CPU cache during writes
@@ -110,9 +114,9 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 		metadataRegionOffset: metadataRegionOffset,
 		userMetadataOffset:   userMetadataOffset,
 		algoConfigOffset:     algoConfigOffset,
-		ramIndexOffset:       ramIndexOffset,
 		metadataWriteOffset:  metadataRegionOffset,
-		ramIndex:             make([]ramIndexEntry, 0, numBlocks+1),
+		ramIndexWriteOffset:  ramIndexOffset,
+		ramIndexBuf:          make([]byte, 0, min(ramIndexSize, ramIndexBufEntries*ramIndexEntrySize)),
 		payloadHasher:        xxhash.New(),
 		metadataHasher:       xxhash.New(),
 		cfg:                  cfg,
@@ -175,11 +179,12 @@ func (iw *indexWriter) foldPayloadHash(blockPayloadHash uint64) {
 // callers do that after any payload write so the entry and payload offset both
 // see the pre-block keyCount.
 func (iw *indexWriter) recordAndWriteMetadata(metadata []byte) error {
-	metadataRelOffset := iw.metadataWriteOffset - iw.metadataRegionOffset
-	iw.ramIndex = append(iw.ramIndex, ramIndexEntry{
-		KeysBefore:     iw.keyCount,
-		MetadataOffset: metadataRelOffset,
-	})
+	iw.appendRAMIndexEntry()
+	if len(iw.ramIndexBuf) == cap(iw.ramIndexBuf) {
+		if err := iw.flushRAMIndex(); err != nil {
+			return err
+		}
+	}
 
 	if len(metadata) > 0 {
 		if _, err := iw.file.WriteAt(metadata, int64(iw.metadataWriteOffset)); err != nil {
@@ -191,6 +196,29 @@ func (iw *indexWriter) recordAndWriteMetadata(metadata []byte) error {
 		}
 		iw.metadataWriteOffset += uint64(len(metadata))
 	}
+	return nil
+}
+
+// appendRAMIndexEntry buffers the RAM index entry for the current key count
+// and metadata write position.
+func (iw *indexWriter) appendRAMIndexEntry() {
+	var entry [ramIndexEntrySize]byte
+	encodeRAMIndexEntryTo(ramIndexEntry{
+		KeysBefore:     iw.keyCount,
+		MetadataOffset: iw.metadataWriteOffset - iw.metadataRegionOffset,
+	}, entry[:])
+	iw.ramIndexBuf = append(iw.ramIndexBuf, entry[:]...)
+}
+
+// flushRAMIndex writes the buffered RAM index entries after those already
+// written and empties the buffer.
+func (iw *indexWriter) flushRAMIndex() error {
+	if _, err := iw.file.WriteAt(iw.ramIndexBuf, int64(iw.ramIndexWriteOffset)); err != nil {
+		return err
+	}
+	iw.wrote(len(iw.ramIndexBuf))
+	iw.ramIndexWriteOffset += uint64(len(iw.ramIndexBuf))
+	iw.ramIndexBuf = iw.ramIndexBuf[:0]
 	return nil
 }
 
@@ -235,7 +263,7 @@ func (iw *indexWriter) commitBlockWithData(metadata []byte, payloads []byte, num
 }
 
 // finalize completes the index file by writing header, variable sections,
-// RAM index, and footer via pwrite.
+// the rest of the RAM index, and footer via pwrite.
 // On error, delegates to close() for idempotent cleanup.
 // On success, nils file so that close() is a safe no-op.
 func (iw *indexWriter) finalize() error {
@@ -245,13 +273,6 @@ func (iw *indexWriter) finalize() error {
 		primaryErr := fmt.Errorf("actual size %d exceeds estimated size %d", actualSize, iw.estimatedSize)
 		return errors.Join(primaryErr, iw.close())
 	}
-
-	// Add sentinel entry for RAM index (spec §3.4)
-	metadataRelOffset := iw.metadataWriteOffset - iw.metadataRegionOffset
-	iw.ramIndex = append(iw.ramIndex, ramIndexEntry{
-		KeysBefore:     iw.keyCount,
-		MetadataOffset: metadataRelOffset,
-	})
 
 	// Get final hashes from streaming hashers (no re-read of regions needed!)
 	payloadRegionHash := iw.payloadHasher.Sum64()
@@ -291,13 +312,9 @@ func (iw *indexWriter) finalize() error {
 		return errors.Join(primaryErr, iw.close())
 	}
 
-	// Write RAM index entries
-	ramIndexBuf := make([]byte, len(iw.ramIndex)*int(ramIndexEntrySize))
-	for i, entry := range iw.ramIndex {
-		offset := i * int(ramIndexEntrySize)
-		encodeRAMIndexEntryTo(entry, ramIndexBuf[offset:])
-	}
-	if _, err := iw.file.WriteAt(ramIndexBuf, int64(iw.ramIndexOffset)); err != nil {
+	// Write the rest of the RAM index, ending with its sentinel entry (spec §3.4)
+	iw.appendRAMIndexEntry()
+	if err := iw.flushRAMIndex(); err != nil {
 		primaryErr := fmt.Errorf("write RAM index failed: %w", err)
 		return errors.Join(primaryErr, iw.close())
 	}
