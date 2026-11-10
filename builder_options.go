@@ -16,6 +16,7 @@ type buildConfig struct {
 	userMetadata    []byte
 	unsortedTempDir string // temp directory for unsorted partition files
 	algorithm       Algorithm
+	bytesPerSync    int // start writeback of the index every this many bytes written; 0 = off
 
 	totalKeys uint64 // Pre-known key count for single-pass builds
 }
@@ -64,6 +65,16 @@ func WithGlobalSeed(seed uint64) BuildOption {
 func WithMetadata(data []byte) BuildOption {
 	return func(c *buildConfig) {
 		c.userMetadata = append([]byte(nil), data...) // Copy slice
+	}
+}
+
+// WithBytesPerSync starts writeback of the index file every n bytes written
+// (on Linux, sync_file_range without waiting), so a large build's dirty pages
+// do not pile up and then hold up other writers' fsyncs on the same disk.
+// 0, the default, leaves writeback to the kernel.
+func WithBytesPerSync(n int) BuildOption {
+	return func(c *buildConfig) {
+		c.bytesPerSync = n
 	}
 }
 

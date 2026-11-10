@@ -175,6 +175,7 @@ rank, err := idx.QueryRank(streamhash.PreHash(originalKey))
 | `WithAlgorithm(algo)` | `AlgoBijection` or `AlgoPTRHash` | `AlgoBijection` |
 | `WithGlobalSeed(seed)` | Hash seed (change on build failure) | fixed default |
 | `WithMetadata(data)` | Arbitrary metadata stored in the file | none |
+| `WithBytesPerSync(n)` | Start writeback of the index every `n` bytes written (Linux) | 0 (left to the kernel) |
 
 ## Choosing an Algorithm
 
