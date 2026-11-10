@@ -53,16 +53,17 @@ type indexWriter struct {
 	unsynced atomic.Int64
 }
 
-// wrote counts n bytes written, and every cfg.bytesPerSync of them starts
-// writeback of the file.
-func (iw *indexWriter) wrote(n int) {
-	if iw.cfg.bytesPerSync <= 0 {
-		return
+// writeAt writes b at off, and every cfg.bytesPerSync bytes written starts
+// writeback of the file. Every write to the index goes through it.
+func (iw *indexWriter) writeAt(b []byte, off int64) error {
+	if _, err := iw.file.WriteAt(b, off); err != nil {
+		return err
 	}
-	if iw.unsynced.Add(int64(n)) >= int64(iw.cfg.bytesPerSync) {
+	if iw.cfg.bytesPerSync > 0 && iw.unsynced.Add(int64(len(b))) >= int64(iw.cfg.bytesPerSync) {
 		iw.unsynced.Store(0)
 		startWriteback(iw.file)
 	}
+	return nil
 }
 
 // newIndexWriter creates a new pwrite-based index writer using separated layout.
@@ -150,11 +151,7 @@ func (iw *indexWriter) writePayloadsDirect(data []byte, offset uint64) error {
 	if absoluteOffset+uint64(len(data)) > iw.metadataRegionOffset {
 		return fmt.Errorf("writePayloadsDirect: write exceeds payload region boundary")
 	}
-	if _, err := iw.file.WriteAt(data, int64(absoluteOffset)); err != nil {
-		return err
-	}
-	iw.wrote(len(data))
-	return nil
+	return iw.writeAt(data, int64(absoluteOffset))
 }
 
 // foldPayloadHash folds a per-block payload hash into the streaming payload hasher.
@@ -182,10 +179,9 @@ func (iw *indexWriter) recordAndWriteMetadata(metadata []byte) error {
 	})
 
 	if len(metadata) > 0 {
-		if _, err := iw.file.WriteAt(metadata, int64(iw.metadataWriteOffset)); err != nil {
+		if err := iw.writeAt(metadata, int64(iw.metadataWriteOffset)); err != nil {
 			return err
 		}
-		iw.wrote(len(metadata))
 		if _, err := iw.metadataHasher.Write(metadata); err != nil {
 			panic("hash.Hash.Write returned unexpected error: " + err.Error())
 		}
@@ -220,10 +216,9 @@ func (iw *indexWriter) commitBlockWithData(metadata []byte, payloads []byte, num
 	entrySize := iw.cfg.payloadSize + iw.cfg.fingerprintSize
 	if entrySize > 0 && numKeys > 0 {
 		payloadOffset := iw.payloadRegionOffset + iw.keyCount*uint64(entrySize)
-		if _, err := iw.file.WriteAt(payloads, int64(payloadOffset)); err != nil {
+		if err := iw.writeAt(payloads, int64(payloadOffset)); err != nil {
 			return err
 		}
-		iw.wrote(len(payloads))
 		iw.foldPayloadHash(xxhash.Sum64(payloads))
 	} else {
 		iw.foldPayloadHash(xxhash.Sum64(nil))
@@ -264,7 +259,7 @@ func (iw *indexWriter) finalize() error {
 	// Write header at offset 0
 	var headerBuf [headerSize]byte
 	iw.header.encodeTo(headerBuf[:])
-	if _, err := iw.file.WriteAt(headerBuf[:], 0); err != nil {
+	if err := iw.writeAt(headerBuf[:], 0); err != nil {
 		primaryErr := fmt.Errorf("write header failed: %w", err)
 		return errors.Join(primaryErr, iw.close())
 	}
@@ -274,7 +269,7 @@ func (iw *indexWriter) finalize() error {
 	userMetaBuf := make([]byte, 4+len(iw.userMetadata))
 	binary.LittleEndian.PutUint32(userMetaBuf, uint32(len(iw.userMetadata)))
 	copy(userMetaBuf[4:], iw.userMetadata)
-	if _, err := iw.file.WriteAt(userMetaBuf, int64(iw.userMetadataOffset)); err != nil {
+	if err := iw.writeAt(userMetaBuf, int64(iw.userMetadataOffset)); err != nil {
 		primaryErr := fmt.Errorf("write user metadata failed: %w", err)
 		return errors.Join(primaryErr, iw.close())
 	}
@@ -286,7 +281,7 @@ func (iw *indexWriter) finalize() error {
 	if algoConfigLen > 0 {
 		iw.algo.EncodeGlobalConfigInto(algoConfigBuf[4:])
 	}
-	if _, err := iw.file.WriteAt(algoConfigBuf, int64(iw.algoConfigOffset)); err != nil {
+	if err := iw.writeAt(algoConfigBuf, int64(iw.algoConfigOffset)); err != nil {
 		primaryErr := fmt.Errorf("write algo config failed: %w", err)
 		return errors.Join(primaryErr, iw.close())
 	}
@@ -297,7 +292,7 @@ func (iw *indexWriter) finalize() error {
 		offset := i * int(ramIndexEntrySize)
 		encodeRAMIndexEntryTo(entry, ramIndexBuf[offset:])
 	}
-	if _, err := iw.file.WriteAt(ramIndexBuf, int64(iw.ramIndexOffset)); err != nil {
+	if err := iw.writeAt(ramIndexBuf, int64(iw.ramIndexOffset)); err != nil {
 		primaryErr := fmt.Errorf("write RAM index failed: %w", err)
 		return errors.Join(primaryErr, iw.close())
 	}
@@ -309,7 +304,7 @@ func (iw *indexWriter) finalize() error {
 	}
 	var footerBuf [footerSize]byte
 	ftr.encodeTo(footerBuf[:])
-	if _, err := iw.file.WriteAt(footerBuf[:], int64(iw.metadataWriteOffset)); err != nil {
+	if err := iw.writeAt(footerBuf[:], int64(iw.metadataWriteOffset)); err != nil {
 		primaryErr := fmt.Errorf("write footer failed: %w", err)
 		return errors.Join(primaryErr, iw.close())
 	}
