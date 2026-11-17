@@ -441,15 +441,16 @@ func (sb *SortedBuilder) AddKey(key []byte, payload uint64) error {
 	}
 	b.lastBlockID = int64(blockIdx)
 
-	var err error
 	if b.workers > 1 {
-		err = b.addKeyParallel(k0, k1, payload, blockIdx)
+		if err := b.addKeyParallel(k0, k1, payload, blockIdx); err != nil {
+			return err
+		}
 	} else {
 		fingerprint := extractFingerprint(k0, k1, b.cfg.fingerprintSize)
-		err = b.addKeySingleThreaded(k0, k1, payload, fingerprint, blockIdx)
-	}
-	if err != nil {
-		return err
+		if err := b.addKeySingleThreaded(k0, k1, payload, fingerprint, blockIdx); err != nil {
+			b.closed = true
+			return errors.Join(err, b.cleanup())
+		}
 	}
 	b.totalKeysAdded++
 	return nil
