@@ -295,15 +295,15 @@ type sortedRun struct {
 // of buf are the run's records. A file shorter than its records fails with
 // ErrTruncatedFile.
 func (r sortedRun) readAt(f *os.File, buf []byte, off int64) (int, error) {
+	want := int(min(int64(len(buf)), r.end-off))
 	n, err := f.ReadAt(buf, off)
+	if n >= want {
+		return want, nil
+	}
 	if err != nil && !errors.Is(err, io.EOF) {
 		return 0, err
 	}
-	want := int(min(int64(len(buf)), r.end-off))
-	if n < want {
-		return 0, fmt.Errorf("sorted file %s: %w: it ends before its last record", f.Name(), ErrTruncatedFile)
-	}
-	return want, nil
+	return 0, fmt.Errorf("sorted file %s: %w: it ends before its last record", f.Name(), ErrTruncatedFile)
 }
 
 // readSortedRuns checks the headers of the sorted files at paths, which must
