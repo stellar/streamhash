@@ -106,7 +106,7 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 	// Pre-allocate disk blocks for space reservation
 	if err := preallocFile(file, int64(estimatedSize)); err != nil {
 		primaryErr := fmt.Errorf("failed to allocate disk space: %w", err)
-		return nil, errors.Join(primaryErr, file.Close())
+		return nil, errors.Join(primaryErr, file.Close(), os.Remove(path))
 	}
 
 	iw := &indexWriter{
