@@ -47,7 +47,9 @@ const (
 // Speed: about 6M keys/s per worker (WithWorkers), up to what the disk reads
 // at 16+PayloadSize bytes per key. Memory: about 256 MiB, plus each worker's
 // block state (about 0.5 MB with bijection, 5 MB with PTRHash), whatever the
-// number of keys or files. The build keeps one file open per input.
+// number of keys, for up to about 700 files; past that, the read buffers take
+// up to 192 KiB per file. The build keeps one file open per input. To build
+// from thousands of files, merge them in groups with MergeSortedFiles first.
 func BuildFromSortedFiles(ctx context.Context, output string, inputs []string, opts ...BuildOption) error {
 	return buildFromSortedFiles(ctx, output, inputs, sortedBuildTuning{}, opts...)
 }
