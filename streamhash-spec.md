@@ -415,6 +415,42 @@ Offset  Bytes                                            Meaning
 
 The metadata region starts at `0x66` (RAM index ends at `0x48 + 3×10 = 0x66`; the payload region is empty). The per-block byte sizes shown are illustrative encoded lengths; they come straight from the RAM-index offsets by subtraction: block 0 = `0xA5 − 0 = 165 B`, block 1 = `0x142 − 0xA5 = 0x9D = 157 B`. Block 1 here happens to equal the empty-block Bijection size from §3.6 (157 B) purely by coincidence — there is nothing to reconcile between the 165 B and 157 B figures. The footer therefore sits at `0x66 + 0x142 = 0x1A8`.
 
+### 3.9. Sorted files
+
+A sorted file is not an index. It holds keys with their payloads in key order, in fixed-width records, as input to an index build. `SortedFileWriter` writes one, and `MergeSortedFiles` merges several that share a payload size into one.
+
+```
++--------------------------------------------------+
+|  Header (padded to a multiple of 4096 B)         |
++--------------------------------------------------+
+|  Records  (Count × (16 + PayloadSize) B)         |
++--------------------------------------------------+
+```
+
+**Header:**
+
+| Offset | Size | Field | Type | Description |
+|--------|------|-------|------|-------------|
+| 0 | 4 | Magic | uint32_le | `0x53545346` ("STSF") |
+| 4 | 2 | Version | uint16_le | `0x0001` |
+| 6 | 1 | PayloadSize | uint8 | Payload bytes per record (0–8) |
+| 7 | 1 | Reserved | byte | Zero |
+| 8 | 8 | Count | uint64_le | Number of records |
+| 16 | 4 | MetadataLen | uint32_le | Metadata length, at most 65,536 |
+| 20 | MetadataLen | Metadata | bytes | Application-defined, not interpreted |
+
+Zero bytes pad the header to `RecordsOffset = ceil((20 + MetadataLen) / 4096) × 4096`, so the records start at a 4096-aligned offset, as direct reads (`O_DIRECT`) need.
+
+**Records.** Record `i` is at `RecordsOffset + i × (16 + PayloadSize)`:
+
+```
+[Key: 16 B][Payload: PayloadSize B, little-endian]
+```
+
+`Key` is the first 16 bytes of the key the index uses (§2.1). Records are in non-decreasing bytewise order of `Key`, which is the order of big-endian bytes 0–7, then big-endian bytes 8–15. `fastRange32` is monotonic in the prefix (§2.2), so this is also non-decreasing block order, the order sorted mode needs (§6.1). A key may repeat; an index build rejects it as a duplicate (§7.1).
+
+**Validation.** A file's size must be exactly `RecordsOffset + Count × (16 + PayloadSize)`. A reader checks this by dividing the size, never by multiplying `Count`, so a corrupt `Count` cannot overflow the arithmetic and pass. The writer writes `Count` after the records, then syncs. §7.5 lists the errors.
+
 ---
 
 ## 4. Algorithm: Bijection
@@ -867,6 +903,17 @@ An index with `N = 0` keys is not an error: it builds successfully, and every `Q
 | `ErrCorruptedIndex` | invalid metadata or out-of-bounds offset |
 | `ErrChecksumFailed` | footer hash mismatch (from `Verify`) |
 | `ErrNotFound` | empty block, or fingerprint mismatch |
+
+**Sorted files (§3.9):**
+
+| Error | Condition |
+|-------|-----------|
+| `ErrTruncatedFile` | file shorter than its header, or than its `Count` records |
+| `ErrKeyCountMismatch` | file longer than its header and `Count` records |
+| `ErrInvalidMagic` | magic ≠ `0x53545346` |
+| `ErrInvalidVersion` | version ≠ `0x0001` |
+| `ErrCorruptedIndex` | PayloadSize > 8, or MetadataLen > 65,536 |
+| `ErrUnsortedInput` | a key sorts before the key before it, when it is written, merged or read |
 
 ### 7.6. Integrity and corruption safety
 

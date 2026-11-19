@@ -29,7 +29,7 @@ var (
 	ErrBlockOverflow = sherr.ErrBlockOverflow
 )
 
-// Index errors.
+// Index and sorted-file errors.
 var (
 	ErrInvalidMagic   = sherr.ErrInvalidMagic
 	ErrInvalidVersion = sherr.ErrInvalidVersion

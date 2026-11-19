@@ -24,13 +24,13 @@ var (
 	ErrIndistinguishableHashes     = errors.New("streamhash: indistinguishable hashes in bucket - retry with different globalSeed")
 )
 
-// Index errors
+// Index and sorted-file errors
 var (
 	ErrInvalidMagic   = errors.New("streamhash: invalid magic number")
 	ErrInvalidVersion = errors.New("streamhash: unsupported version")
 	ErrChecksumFailed = errors.New("streamhash: file checksum verification failed")
-	ErrTruncatedFile  = errors.New("streamhash: index file is truncated")
-	ErrCorruptedIndex = errors.New("streamhash: index data is corrupted")
+	ErrTruncatedFile  = errors.New("streamhash: file is truncated")
+	ErrCorruptedIndex = errors.New("streamhash: data is corrupted")
 )
 
 // Query errors
