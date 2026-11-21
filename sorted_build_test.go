@@ -3,7 +3,6 @@ package streamhash
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -11,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,6 +308,17 @@ func TestBuildFromSortedFilesRejects(t *testing.T) {
 		}
 		return out
 	}
+	// moved returns a copy of path with record from moved back to index to.
+	moved := func(path string, recordSize, from, to int) string {
+		data := readFileBytes(t, path)
+		span := data[sortedFileAlign+to*recordSize : sortedFileAlign+(from+1)*recordSize]
+		copy(span, slices.Concat(span[len(span)-recordSize:], span[:len(span)-recordSize]))
+		out := filepath.Join(dir, fmt.Sprintf("moved%d-%d-%s", from, to, filepath.Base(path)))
+		if err := os.WriteFile(out, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
 	recs3 := uniqueSortedRecords(rng, numKeys, 3)
 	clean3 := write("clean3", 3, recs3)
 	other3 := write("other3", 3, uniqueSortedRecords(rng, 5000, 3))
@@ -319,25 +330,9 @@ func TestBuildFromSortedFilesRejects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A stripe boundary: with 9000-key stripes the geometry has a few blocks
-	// per stripe, and the first record of stripe 1 is the first whose prefix
-	// is at or past the stripe's bound.
-	numBlocks, err := numBlocksForAlgo(AlgoBijection, uint64(len(recs3)), 3, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	geo, err := newStripeGeometry(numBlocks, uint64(len(recs3)), 9000)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if geo.numStripes < 3 {
-		t.Fatalf("%d stripes, want several", geo.numStripes)
-	}
-	bound, _ := geo.bound(0)
-	boundary := slices.IndexFunc(recs3, func(r sortedRecord) bool { return binary.BigEndian.Uint64(r.key[:8]) >= bound })
-	if boundary < 1 {
-		t.Fatalf("no record at or past the first stripe bound %#x", bound)
-	}
+	// The file's last record moved to index 100, between the probes of
+	// gather's search: stripe 0 takes it, though it belongs to the last stripe.
+	outside := moved(clean3, 19, len(recs3)-1, 100)
 
 	// The seam between the smallest read buffers of 16-byte records.
 	seam := sortedBuildBufferSize(1, MinKeySize, 1) / MinKeySize
@@ -351,23 +346,24 @@ func TestBuildFromSortedFilesRejects(t *testing.T) {
 		inputs []string
 		tune   sortedBuildTuning
 		want   error
+		msg    string
 	}{
-		{"no inputs", nil, sortedBuildTuning{}, nil},
-		{"mismatched payload sizes", []string{clean3, clean0}, sortedBuildTuning{}, nil},
-		{"a truncated file", []string{clean3, truncated}, sortedBuildTuning{}, ErrTruncatedFile},
-		{"a record out of order inside a run", []string{other3, swapped(clean3, 19, 777)}, sortedBuildTuning{stripeKeys: 9000}, ErrUnsortedInput},
-		{"a record out of order across a read-buffer seam", []string{swapped(clean0, 16, seam-1)}, sortedBuildTuning{bufBytes: 1}, ErrUnsortedInput},
-		{"a record outside its stripe", []string{other3, swapped(clean3, 19, boundary-1)}, sortedBuildTuning{stripeKeys: 9000}, ErrUnsortedInput},
-		{"a duplicate key within one file", []string{duplicateIn}, sortedBuildTuning{}, ErrDuplicateKey},
-		{"a duplicate key across two files", []string{clean3, duplicateAcross}, sortedBuildTuning{}, ErrDuplicateKey},
+		{"no inputs", nil, sortedBuildTuning{}, nil, ""},
+		{"mismatched payload sizes", []string{clean3, clean0}, sortedBuildTuning{}, nil, ""},
+		{"a truncated file", []string{clean3, truncated}, sortedBuildTuning{}, ErrTruncatedFile, ""},
+		{"a record out of order inside a run", []string{other3, swapped(clean3, 19, 777)}, sortedBuildTuning{stripeKeys: 9000}, ErrUnsortedInput, ""},
+		{"a record out of order across a read-buffer seam", []string{swapped(clean0, 16, seam-1)}, sortedBuildTuning{bufBytes: 1}, ErrUnsortedInput, ""},
+		{"a record outside its stripe", []string{other3, outside}, sortedBuildTuning{stripeKeys: 9000}, ErrUnsortedInput, "outside its stripe"},
+		{"a duplicate key within one file", []string{duplicateIn}, sortedBuildTuning{}, ErrDuplicateKey, ""},
+		{"a duplicate key across two files", []string{clean3, duplicateAcross}, sortedBuildTuning{}, ErrDuplicateKey, ""},
 	} {
 		for _, w := range []int{1, 4} {
 			for _, algo := range []Algorithm{AlgoBijection, AlgoPTRHash} {
 				t.Run(fmt.Sprintf("%s/workers=%d/%s", tc.name, w, algo), func(t *testing.T) {
 					output := filepath.Join(dir, "rejected.idx")
 					err := buildFilesWithWatchdog(t, context.Background(), output, tc.inputs, tc.tune, WithWorkers(w), WithAlgorithm(algo))
-					if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) {
-						t.Fatalf("the build returned %v, want %v", err, tc.want)
+					if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || !strings.Contains(err.Error(), tc.msg) {
+						t.Fatalf("the build returned %v, want %v %s", err, tc.want, tc.msg)
 					}
 					if _, err := os.Stat(output); !os.IsNotExist(err) {
 						t.Fatalf("a failed build left its output: %v", err)
