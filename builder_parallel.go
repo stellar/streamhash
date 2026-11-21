@@ -70,7 +70,7 @@ func (b *builder) startPipeline(worker func() error) {
 	}
 
 	// Wrap in explicit cancel so shutdownWorkers can unblock workers stuck on resultChan.
-	ctx, cancel := context.WithCancel(b.ctx)
+	ctx, cancel := context.WithCancelCause(b.ctx)
 	b.workerCancel = cancel
 	b.workerGroup, b.workerCtx = errgroup.WithContext(ctx)
 	for range b.workers {
@@ -151,7 +151,7 @@ func (b *builder) dispatchBlockWork(blockID uint32, entries []routedEntry, poole
 	case b.workChan <- work:
 		return nil
 	case <-b.workerCtx.Done():
-		return b.workerCtx.Err()
+		return b.pipelineErr()
 	case err := <-b.writerDone:
 		// A nil read here means writerDone was closed (pipeline torn down); do
 		// not drop this block — consumePipelineError surfaces the real error.
@@ -163,6 +163,15 @@ func (b *builder) dispatchBlockWork(blockID uint32, entries []routedEntry, poole
 // entries, so keysBefore is left unchanged (no payload offset to advance).
 func (b *builder) dispatchEmptyBlock(blockID uint32) error {
 	return b.dispatchBlockWork(blockID, nil, false)
+}
+
+// pipelineErr returns why workerCtx is done: the build context's error if the
+// build was canceled, otherwise the error of the worker or writer that failed.
+func (b *builder) pipelineErr() error {
+	if err := b.ctx.Err(); err != nil {
+		return err
+	}
+	return context.Cause(b.workerCtx)
 }
 
 // blockSolver is a worker's block builder, with the payload buffer it reuses
@@ -293,10 +302,12 @@ func (b *builder) runWorker() error {
 // drainParallelPipeline's workerGroup.Wait — would hang forever. Combined with
 // runWorker returning buildErr (which cancels via the errgroup), this guarantees
 // the invariant: ANY internal failure cancels b.workerCtx exactly once.
-// workerCancel is idempotent (also called by shutdownWorkers).
+// workerCancel is idempotent (also called by shutdownWorkers). err is its
+// cause, so the context carries the failure even when this cancel lands
+// before a failed worker's own.
 func (b *builder) failWriter(err error) {
 	b.writerDone <- err
-	b.workerCancel()
+	b.workerCancel(err)
 }
 
 func (b *builder) runWriter() {
@@ -425,7 +436,7 @@ func (b *builder) shutdownWorkers() {
 	}
 	b.workersShutDown.Store(true)
 	if b.workerCancel != nil {
-		b.workerCancel()
+		b.workerCancel(nil)
 	}
 	close(b.workChan)
 	_ = b.workerGroup.Wait()
