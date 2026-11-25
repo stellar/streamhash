@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 const (
@@ -20,8 +22,9 @@ const (
 // MergeSortedFiles merges the sorted files at inputs, which must all have
 // cfg.PayloadSize, into one at output, written with cfg. It is for a writer
 // that spilled sorted pieces. It keeps every input open, with a 128 KiB read
-// buffer each. An input whose keys are out of order fails the merge, and a
-// failed or canceled merge removes the output.
+// buffer each. An input whose keys are out of order fails the merge, as does
+// one whose records do not match its hash (ErrChecksumFailed), and a failed or
+// canceled merge removes the output.
 func MergeSortedFiles(ctx context.Context, output string, inputs []string, cfg SortedFileConfig) error {
 	return mergeSortedFiles(ctx, output, inputs, cfg, mergeReadBuffer)
 }
@@ -147,6 +150,9 @@ func mergeFiles(ctx context.Context, runs []sortedRun, recordSize, bufBytes int,
 			if r.err != nil {
 				return r.err
 			}
+			if err := r.run.check(r.hash.Sum64()); err != nil {
+				return err
+			}
 			n--
 			if n > 0 {
 				h[0] = h[n]
@@ -196,6 +202,8 @@ type runReader struct {
 	cursor     int   // offset in buf of the current record
 	valid      int   // bytes of buf that hold records
 	fileOff    int64 // file offset of buf[0], a multiple of directAlign
+	hashed     int64 // file offset the records are hashed up to
+	hash       *xxhash.Digest
 	err        error
 }
 
@@ -209,7 +217,7 @@ func newRunReader(run sortedRun, recordSize, bufBytes int) (*runReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &runReader{run: run, f: f, buf: alignedBuffer(bufBytes), recordSize: recordSize}
+	r := &runReader{run: run, f: f, buf: alignedBuffer(bufBytes), recordSize: recordSize, hashed: run.start, hash: xxhash.New()}
 	if !r.fill(run.start) {
 		f.Close()
 		return nil, r.err
@@ -238,5 +246,8 @@ func (r *runReader) fill(off int64) bool {
 		return false
 	}
 	r.fileOff, r.cursor = alignedOff, int(off-alignedOff)
+	// A refill rereads the bytes from alignedOff, hashed already.
+	_, _ = r.hash.Write(r.buf[r.hashed-alignedOff : r.valid])
+	r.hashed = alignedOff + int64(r.valid)
 	return true
 }

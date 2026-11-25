@@ -7,26 +7,34 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 // Sorted file header (spec §3.9):
 //
 //	Offset  Size  Field        Type
 //	0       4     Magic        0x53545346 ("STSF")
-//	4       2     Version      0x0001
+//	4       2     Version      0x0002
 //	6       1     PayloadSize  uint8 (0-8)
 //	7       1     Reserved     zero
 //	8       8     Count        uint64_le
-//	16      4     MetadataLen  uint32_le
-//	20      ML    Metadata
+//	16      8     RecordsHash  uint64_le (xxHash64 of the records)
+//	24      8     HeaderHash   uint64_le (xxHash64 of the header's other fields and the metadata)
+//	32      4     MetadataLen  uint32_le
+//	36      ML    Metadata
 //
 // Zero bytes pad the header to a multiple of 4096, and the records follow.
 const (
 	sortedFileMagic   = uint32(0x53545346)
-	sortedFileVersion = uint16(0x0001)
+	sortedFileVersion = uint16(0x0002)
 
-	sortedFileFixedSize   = 20
-	sortedFileCountOffset = 8
+	sortedFileFixedSize = 36
+	// Finish writes Count, RecordsHash and HeaderHash, which are contiguous.
+	sortedFileCountOffset       = 8
+	sortedFileRecordsHashOffset = 16
+	sortedFileHeaderHashOffset  = 24
+	sortedFileMetadataLenOffset = 32
 
 	// sortedFileAlign aligns the records, so direct reads can start at them.
 	// It is a multiple of directAlign.
@@ -48,6 +56,17 @@ type SortedFileHeader struct {
 	PayloadSize int    // bytes per payload, 0 to 8
 	Count       uint64 // records in the file
 	Metadata    []byte // the SortedFileConfig.Metadata the file was written with
+}
+
+// sortedFileHeaderHash is the HeaderHash of a header whose fixed fields are
+// fixed: xxHash64 of the fields before HeaderHash, then MetadataLen and the
+// metadata.
+func sortedFileHeaderHash(fixed, metadata []byte) uint64 {
+	d := xxhash.New()
+	_, _ = d.Write(fixed[:sortedFileHeaderHashOffset])
+	_, _ = d.Write(fixed[sortedFileMetadataLenOffset:sortedFileFixedSize])
+	_, _ = d.Write(metadata)
+	return d.Sum64()
 }
 
 // recordsOffset is where the file's records start.
@@ -81,7 +100,9 @@ func (k sortKey) less(o sortKey) bool {
 // as PayloadSize little-endian bytes. MergeSortedFiles merges several into one.
 type SortedFileWriter struct {
 	f          *os.File
+	out        *writebackWriter
 	bw         *bufio.Writer
+	header     []byte // the fixed fields and the metadata
 	recordSize int
 	maxPayload uint64
 	last       sortKey
@@ -106,14 +127,18 @@ func NewSortedFileWriter(path string, cfg SortedFileConfig) (*SortedFileWriter, 
 	if err != nil {
 		return nil, err
 	}
+	header := encodeSortedFileHeader(cfg)
+	out := &writebackWriter{f: f, bytesPerSync: cfg.BytesPerSync, skip: len(header), records: xxhash.New()}
 	w := &SortedFileWriter{
 		f:          f,
-		bw:         bufio.NewWriterSize(&writebackWriter{f: f, bytesPerSync: cfg.BytesPerSync}, 1<<20),
+		out:        out,
+		bw:         bufio.NewWriterSize(out, 1<<20),
+		header:     header[:sortedFileFixedSize+len(cfg.Metadata)],
 		recordSize: MinKeySize + cfg.PayloadSize,
 		maxPayload: ^uint64(0) >> (64 - 8*cfg.PayloadSize),
 	}
 	// The header fits in the empty buffer, so this write cannot fail.
-	_, _ = w.bw.Write(encodeSortedFileHeader(cfg))
+	_, _ = w.bw.Write(header)
 	return w, nil
 }
 
@@ -153,8 +178,8 @@ func (w *SortedFileWriter) appendEncoded(records []byte) error {
 	return nil
 }
 
-// Finish writes the record count, syncs and closes the file. If it fails, it
-// removes the file.
+// Finish writes the record count and the hashes, syncs and closes the file.
+// If it fails, it removes the file.
 func (w *SortedFileWriter) Finish() error {
 	if w.closed {
 		return os.ErrClosed
@@ -166,15 +191,18 @@ func (w *SortedFileWriter) Finish() error {
 	return nil
 }
 
-// commit flushes, patches the count, syncs and closes, in that order: a short
-// file's header is still in the buffer until the flush, and ENOSPC and EIO
-// can surface only at close.
+// commit flushes, patches the count and the hashes, syncs and closes, in that
+// order: a short file's header is still in the buffer until the flush, which
+// also completes the records' hash, and ENOSPC and EIO can surface only at
+// close.
 func (w *SortedFileWriter) commit() error {
 	err := w.bw.Flush()
 	if err == nil {
-		var count [8]byte
-		binary.LittleEndian.PutUint64(count[:], w.count)
-		_, err = w.f.WriteAt(count[:], sortedFileCountOffset)
+		fixed := w.header[:sortedFileFixedSize]
+		binary.LittleEndian.PutUint64(fixed[sortedFileCountOffset:], w.count)
+		binary.LittleEndian.PutUint64(fixed[sortedFileRecordsHashOffset:], w.out.records.Sum64())
+		binary.LittleEndian.PutUint64(fixed[sortedFileHeaderHashOffset:], sortedFileHeaderHash(fixed, w.header[sortedFileFixedSize:]))
+		_, err = w.f.WriteAt(fixed[sortedFileCountOffset:sortedFileMetadataLenOffset], sortedFileCountOffset)
 	}
 	if err == nil {
 		err = w.f.Sync()
@@ -196,20 +224,28 @@ func encodeSortedFileHeader(cfg SortedFileConfig) []byte {
 	binary.LittleEndian.PutUint32(buf[0:4], sortedFileMagic)
 	binary.LittleEndian.PutUint16(buf[4:6], sortedFileVersion)
 	buf[6] = byte(cfg.PayloadSize)
-	binary.LittleEndian.PutUint32(buf[16:20], uint32(len(cfg.Metadata)))
+	binary.LittleEndian.PutUint32(buf[sortedFileMetadataLenOffset:], uint32(len(cfg.Metadata)))
 	copy(buf[sortedFileFixedSize:], cfg.Metadata)
 	return buf
 }
 
 // writebackWriter writes to f, starting writeback every bytesPerSync bytes.
+// It hashes what it writes past the first skip bytes, the header, into
+// records: the buffer's flushes hash the records in bulk, where hashing in
+// Add would cost several times more.
 type writebackWriter struct {
 	f            *os.File
 	bytesPerSync int
 	unsynced     int
+	skip         int
+	records      *xxhash.Digest
 }
 
 func (w *writebackWriter) Write(p []byte) (int, error) {
 	n, err := w.f.Write(p)
+	skipped := min(w.skip, n)
+	w.skip -= skipped
+	_, _ = w.records.Write(p[skipped:n])
 	if w.bytesPerSync > 0 {
 		w.unsynced += n
 		if w.unsynced >= w.bytesPerSync {
@@ -220,55 +256,65 @@ func (w *writebackWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// ReadSortedFileHeader reads and checks the header at path: magic, version,
-// payload size, and that the record count matches the file's length.
-func ReadSortedFileHeader(path string) (SortedFileHeader, error) {
+// readSortedFileHeaderAt is readSortedFileHeader for the file at path.
+func readSortedFileHeaderAt(path string) (SortedFileHeader, uint64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return SortedFileHeader{}, err
+		return SortedFileHeader{}, 0, err
 	}
 	defer f.Close()
 	return readSortedFileHeader(f)
 }
 
+// ReadSortedFileHeader reads and checks the header at path: magic, version,
+// payload size, its hash, and that the record count matches the file's length.
+// It does not read the records, so it does not check their hash.
+func ReadSortedFileHeader(path string) (SortedFileHeader, error) {
+	h, _, err := readSortedFileHeaderAt(path)
+	return h, err
+}
+
 // readSortedFileHeader reads the header of f, which must not be open for
-// direct reads: these reads are not aligned.
-func readSortedFileHeader(f *os.File) (SortedFileHeader, error) {
+// direct reads: these reads are not aligned. It also returns the RecordsHash.
+func readSortedFileHeader(f *os.File) (SortedFileHeader, uint64, error) {
 	info, err := f.Stat()
 	if err != nil {
-		return SortedFileHeader{}, err
+		return SortedFileHeader{}, 0, err
 	}
 	size := info.Size()
 	if size < sortedFileFixedSize {
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w", f.Name(), ErrTruncatedFile)
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w", f.Name(), ErrTruncatedFile)
 	}
 	var fixed [sortedFileFixedSize]byte
 	if _, err := f.ReadAt(fixed[:], 0); err != nil {
-		return SortedFileHeader{}, err
+		return SortedFileHeader{}, 0, err
 	}
 	if binary.LittleEndian.Uint32(fixed[0:4]) != sortedFileMagic {
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w", f.Name(), ErrInvalidMagic)
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w", f.Name(), ErrInvalidMagic)
 	}
 	if binary.LittleEndian.Uint16(fixed[4:6]) != sortedFileVersion {
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w", f.Name(), ErrInvalidVersion)
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w", f.Name(), ErrInvalidVersion)
 	}
-	h := SortedFileHeader{PayloadSize: int(fixed[6]), Count: binary.LittleEndian.Uint64(fixed[8:16])}
+	h := SortedFileHeader{PayloadSize: int(fixed[6]), Count: binary.LittleEndian.Uint64(fixed[sortedFileCountOffset:])}
 	if h.PayloadSize > maxPayloadSize {
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w: payload size %d", f.Name(), ErrCorruptedIndex, h.PayloadSize)
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w: payload size %d", f.Name(), ErrCorruptedIndex, h.PayloadSize)
 	}
-	metadataLen := binary.LittleEndian.Uint32(fixed[16:20])
+	metadataLen := binary.LittleEndian.Uint32(fixed[sortedFileMetadataLenOffset:])
 	if metadataLen > maxSortedFileMetadata {
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w: metadata length %d is over the maximum of %d", f.Name(), ErrCorruptedIndex, metadataLen, maxSortedFileMetadata)
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w: metadata length %d is over the maximum of %d", f.Name(), ErrCorruptedIndex, metadataLen, maxSortedFileMetadata)
 	}
 	recordsOffset := sortedFileRecordsOffset(int(metadataLen))
 	if size < recordsOffset {
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w", f.Name(), ErrTruncatedFile)
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w", f.Name(), ErrTruncatedFile)
 	}
 	if metadataLen > 0 {
 		h.Metadata = make([]byte, metadataLen)
 		if _, err := f.ReadAt(h.Metadata, sortedFileFixedSize); err != nil {
-			return SortedFileHeader{}, err
+			return SortedFileHeader{}, 0, err
 		}
+	}
+	if sortedFileHeaderHash(fixed[:], h.Metadata) != binary.LittleEndian.Uint64(fixed[sortedFileHeaderHashOffset:]) {
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w: header", f.Name(), ErrChecksumFailed)
 	}
 	// Divide the trusted size rather than multiply the untrusted count, so a
 	// corrupt count cannot overflow.
@@ -278,17 +324,26 @@ func readSortedFileHeader(f *os.File) (SortedFileHeader, error) {
 		if holds < h.Count {
 			sentinel = ErrTruncatedFile
 		}
-		return SortedFileHeader{}, fmt.Errorf("sorted file %s: %w: the header counts %d records of %d bytes, the file holds %d bytes of records",
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w: the header counts %d records of %d bytes, the file holds %d bytes of records",
 			f.Name(), sentinel, h.Count, recordSize, body)
 	}
-	return h, nil
+	return h, binary.LittleEndian.Uint64(fixed[sortedFileRecordsHashOffset:]), nil
 }
 
 // sortedRun is a sorted file's records: the file offsets where they start
-// and end.
+// and end, and their hash.
 type sortedRun struct {
 	path       string
 	start, end int64
+	hash       uint64
+}
+
+// check fails if the records read from the run hash to sum, not to its hash.
+func (r sortedRun) check(sum uint64) error {
+	if sum != r.hash {
+		return fmt.Errorf("sorted file %s: %w: records", r.path, ErrChecksumFailed)
+	}
+	return nil
 }
 
 // readAt reads the run's file f at off into buf, and returns how many bytes
@@ -314,7 +369,7 @@ func readSortedRuns(paths []string) ([]sortedRun, int, uint64, error) {
 	var payloadSize int
 	var total uint64
 	for i, path := range paths {
-		h, err := ReadSortedFileHeader(path)
+		h, recordsHash, err := readSortedFileHeaderAt(path)
 		if err != nil {
 			return nil, 0, 0, err
 		}
@@ -325,7 +380,7 @@ func readSortedRuns(paths []string) ([]sortedRun, int, uint64, error) {
 		}
 		if h.Count > 0 {
 			start := h.recordsOffset()
-			runs = append(runs, sortedRun{path: path, start: start, end: start + int64(h.Count)*int64(MinKeySize+h.PayloadSize)})
+			runs = append(runs, sortedRun{path: path, start: start, end: start + int64(h.Count)*int64(MinKeySize+h.PayloadSize), hash: recordsHash})
 		}
 		total += h.Count
 	}
@@ -350,7 +405,9 @@ func checkOutputNotInput(output string, inputs []string) error {
 // SortedFileReader reads a sorted file's records in order.
 type SortedFileReader struct {
 	f           *os.File
+	hash        *xxhash.Digest
 	br          *bufio.Reader
+	run         sortedRun
 	payloadSize int
 	left        uint64
 	last        sortKey
@@ -358,24 +415,32 @@ type SortedFileReader struct {
 }
 
 // OpenSortedFile opens the sorted file at path to read its records in order.
-// It checks the header as ReadSortedFileHeader does.
+// It checks the header as ReadSortedFileHeader does. The records' hash is
+// checked when the last record is read: only once Next has returned it are
+// the records known to be the ones written.
 func OpenSortedFile(path string) (*SortedFileReader, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	h, err := readSortedFileHeader(f)
+	h, recordsHash, err := readSortedFileHeader(f)
 	if err == nil {
 		_, err = f.Seek(h.recordsOffset(), io.SeekStart)
 	}
 	if err != nil {
 		return nil, errors.Join(err, f.Close())
 	}
-	return &SortedFileReader{f: f, br: bufio.NewReaderSize(f, 1<<20), payloadSize: h.PayloadSize, left: h.Count}, nil
+	hash := xxhash.New()
+	return &SortedFileReader{
+		f: f, hash: hash, br: bufio.NewReaderSize(io.TeeReader(f, hash), 1<<20),
+		run:         sortedRun{path: path, hash: recordsHash},
+		payloadSize: h.PayloadSize, left: h.Count,
+	}, nil
 }
 
 // Next returns the next record's key and payload, and io.EOF after the last
-// record. A record out of order fails with ErrUnsortedInput.
+// record. A record out of order fails with ErrUnsortedInput. If the records
+// do not match the file's hash, the last one fails with ErrChecksumFailed.
 func (r *SortedFileReader) Next() (key [MinKeySize]byte, payload uint64, err error) {
 	if r.left == 0 {
 		return key, 0, io.EOF
@@ -393,6 +458,12 @@ func (r *SortedFileReader) Next() (key [MinKeySize]byte, payload uint64, err err
 		return key, 0, fmt.Errorf("sorted file %s: %w", r.f.Name(), ErrUnsortedInput)
 	}
 	r.last = k
+	if r.left == 0 {
+		// The buffered reader has read every record by now.
+		if err := r.run.check(r.hash.Sum64()); err != nil {
+			return key, 0, err
+		}
+	}
 	copy(key[:], rec[:MinKeySize])
 	return key, unpackPayloadFromBytes(rec[MinKeySize:], r.payloadSize), nil
 }

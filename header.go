@@ -2,7 +2,9 @@ package streamhash
 
 import (
 	"encoding/binary"
+	"hash/crc32"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/stellar/streamhash/internal/sherr"
 )
 
@@ -12,7 +14,7 @@ const (
 	magic = uint32(0x53544D48)
 
 	// version is the current format version
-	version = uint16(0x0001)
+	version = uint16(0x0002)
 
 	// headerSize is the exact size of the serialized header (64 bytes)
 	headerSize = 64
@@ -20,10 +22,16 @@ const (
 	// footerSize is the exact size of the serialized footer (32 bytes)
 	footerSize = 32
 
-	// ramIndexEntrySize is the size of each RAM index entry (10 bytes for compact layout)
-	// Format: [KeysBefore: 40 bits (5 bytes)][MetadataOffset: 40 bits (5 bytes)]
+	// headerHashOffset is where the header's HeaderHash is.
+	headerHashOffset = 56
+
+	// ramIndexEntrySize is the size of each RAM index entry.
+	// Format: [KeysBefore: 40 bits (5 bytes)][MetadataOffset: 40 bits (5 bytes)][Check: 4 bytes]
 	// This supports up to ~1.1 trillion keys and ~1.1TB metadata region.
-	ramIndexEntrySize = 10
+	ramIndexEntrySize = 14
+
+	// ramIndexEntryDataSize is the entry's bytes before its check.
+	ramIndexEntryDataSize = 10
 )
 
 // header is the 64-byte file header (spec §3.2).
@@ -32,14 +40,15 @@ const (
 //
 //	Offset  Size  Field            Type
 //	0       4     Magic            0x53544D48 ("STMH")
-//	4       2     Version          0x0001
+//	4       2     Version          0x0002
 //	6       8     TotalKeys        uint64_le
 //	14      4     NumBlocks        uint32_le
 //	18      4     PayloadSize      uint32_le
 //	22      1     FingerprintSize  uint8 (bytes)
 //	23      8     Seed             uint64_le (globalSeed)
 //	31      2     BlockAlgorithm   uint16_le (0=Bijection, 1=PTRHash)
-//	33      31    Reserved         [31]byte (zero)
+//	33      23    Reserved         [23]byte (zero)
+//	56      8     HeaderHash       uint64_le (xxHash64, see headerHash)
 //
 // Note: TotalBuckets, BucketsPerBlock, and PrefixBits are algorithm-internal.
 // Each algorithm derives these from NumBlocks using its own constants.
@@ -53,7 +62,8 @@ type header struct {
 	FingerprintSize uint8     // 1 byte: fingerprint bytes (0 = none)
 	Seed            uint64    // 8 bytes: global seed for hashing
 	BlockAlgorithm  Algorithm // 2 bytes: algorithm (0=Bijection, 1=PTRHash)
-	Reserved        [31]byte  // 31 bytes: reserved (zero)
+	Reserved        [23]byte  // 23 bytes: reserved (zero)
+	HeaderHash      uint64    // 8 bytes: xxHash64 of the header and variable sections
 }
 
 // encodeTo serializes the header to an existing buffer.
@@ -66,7 +76,17 @@ func (h *header) encodeTo(buf []byte) {
 	buf[22] = h.FingerprintSize
 	binary.LittleEndian.PutUint64(buf[23:31], h.Seed)
 	binary.LittleEndian.PutUint16(buf[31:33], uint16(h.BlockAlgorithm))
-	copy(buf[33:64], h.Reserved[:])
+	copy(buf[33:56], h.Reserved[:])
+	binary.LittleEndian.PutUint64(buf[56:64], h.HeaderHash)
+}
+
+// headerHash is the HeaderHash of an index whose bytes before the RAM index
+// are prefix: xxHash64 of them, without the HeaderHash bytes.
+func headerHash(prefix []byte) uint64 {
+	d := xxhash.New()
+	_, _ = d.Write(prefix[:headerHashOffset])
+	_, _ = d.Write(prefix[headerSize:])
+	return d.Sum64()
 }
 
 // decodeHeader parses a 64-byte header.
@@ -85,7 +105,8 @@ func decodeHeader(buf []byte) (*header, error) {
 		Seed:            binary.LittleEndian.Uint64(buf[23:31]),
 		BlockAlgorithm:  Algorithm(binary.LittleEndian.Uint16(buf[31:33])),
 	}
-	copy(h.Reserved[:], buf[33:64])
+	copy(h.Reserved[:], buf[33:56])
+	h.HeaderHash = binary.LittleEndian.Uint64(buf[56:64])
 
 	if h.Magic != magic {
 		return nil, sherr.ErrInvalidMagic
@@ -170,13 +191,14 @@ func decodeFooter(buf []byte) (*footer, error) {
 }
 
 // ramIndexEntry is a single entry in the RAM index.
-// Each entry is 10 bytes (Compact Layout with uint40+uint40).
+// Each entry is 14 bytes (Compact Layout with uint40+uint40, and a check).
 //
-// Wire format (10 bytes packed, little-endian):
+// Wire format (14 bytes packed, little-endian):
 //
 //	Offset  Size  Field           Type
 //	0       5     KeysBefore      uint40_le (cumulative count, max ~1.1 trillion)
 //	5       5     MetadataOffset  uint40_le (relative offset, max ~1.1 TB)
+//	10      4     Check           uint32_le (see ramIndexEntryCheck)
 //
 // Note: Payloads are at fixed offsets (globalRank × entrySize), so no BlockOffset needed.
 // MetadataOffset is relative to the start of the metadata region.
@@ -185,9 +207,20 @@ type ramIndexEntry struct {
 	MetadataOffset uint64 // Relative offset within metadata region (stored as 40-bit)
 }
 
-// encodeRAMIndexEntryTo serializes a RAM index entry into an existing buffer.
-// Uses little-endian 40-bit encoding for both fields.
-func encodeRAMIndexEntryTo(e ramIndexEntry, buf []byte) {
+var castagnoli = crc32.MakeTable(crc32.Castagnoli)
+
+// ramIndexEntryCheck is the check of block's entry, whose first
+// ramIndexEntryDataSize bytes are data: CRC-32C of those bytes, continued
+// from the block index as the running CRC. The index makes an entry read at
+// another block's position fail too. Passing it as the running CRC, not as
+// bytes, keeps a buffer off the heap on every lookup.
+func ramIndexEntryCheck(block uint32, data []byte) uint32 {
+	return crc32.Update(block, castagnoli, data[:ramIndexEntryDataSize])
+}
+
+// encodeRAMIndexEntryTo serializes block's RAM index entry, with its check,
+// into an existing buffer. Uses little-endian 40-bit encoding for both fields.
+func encodeRAMIndexEntryTo(e ramIndexEntry, block uint32, buf []byte) {
 	// Little-endian 40-bit KeysBefore (bytes 0-4)
 	buf[0] = byte(e.KeysBefore)
 	buf[1] = byte(e.KeysBefore >> 8)
@@ -200,9 +233,10 @@ func encodeRAMIndexEntryTo(e ramIndexEntry, buf []byte) {
 	buf[7] = byte(e.MetadataOffset >> 16)
 	buf[8] = byte(e.MetadataOffset >> 24)
 	buf[9] = byte(e.MetadataOffset >> 32)
+	binary.LittleEndian.PutUint32(buf[10:14], ramIndexEntryCheck(block, buf))
 }
 
-// decodeRAMIndexEntry parses a 10-byte RAM index entry.
+// decodeRAMIndexEntry parses a RAM index entry without verifying its check.
 // Uses little-endian 40-bit decoding for both fields.
 func decodeRAMIndexEntry(buf []byte) ramIndexEntry {
 	return ramIndexEntry{

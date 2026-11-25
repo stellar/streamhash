@@ -91,6 +91,7 @@ func TestCorruptionDetection(t *testing.T) {
 		for i := 0; i < 5 && ramIndexOffset+i < len(corrupted); i++ {
 			corrupted[ramIndexOffset+i] = 0xFF
 		}
+		rehashIndex(corrupted)
 		if err := os.WriteFile(corruptedPath, corrupted, 0644); err != nil {
 			t.Fatal(err)
 		}

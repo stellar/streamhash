@@ -28,7 +28,7 @@ func TestRAMIndexAcrossBufferFlushes(t *testing.T) {
 			want := make([]byte, (numBlocks+1)*ramIndexEntrySize)
 			var entry ramIndexEntry
 			for b := range numBlocks {
-				encodeRAMIndexEntryTo(entry, want[b*ramIndexEntrySize:])
+				encodeRAMIndexEntryTo(entry, b, want[b*ramIndexEntrySize:])
 				numKeys := int(b % 5)
 				metadata := bytes.Repeat([]byte{byte(b)}, int(b%3))
 				if err := iw.commitBlockWithData(metadata, nil, numKeys); err != nil {
@@ -37,7 +37,7 @@ func TestRAMIndexAcrossBufferFlushes(t *testing.T) {
 				entry.KeysBefore += uint64(numKeys)
 				entry.MetadataOffset += uint64(len(metadata))
 			}
-			encodeRAMIndexEntryTo(entry, want[numBlocks*ramIndexEntrySize:])
+			encodeRAMIndexEntryTo(entry, numBlocks, want[numBlocks*ramIndexEntrySize:])
 			if cap(iw.ramIndexBuf) > ramIndexBufEntries*ramIndexEntrySize {
 				t.Fatalf("the writer buffered %d bytes of RAM index", cap(iw.ramIndexBuf))
 			}
