@@ -202,7 +202,6 @@ type runReader struct {
 	cursor     int   // offset in buf of the current record
 	valid      int   // bytes of buf that hold records
 	fileOff    int64 // file offset of buf[0], a multiple of directAlign
-	hashed     int64 // file offset the records are hashed up to
 	hash       *xxhash.Digest
 	err        error
 }
@@ -217,7 +216,7 @@ func newRunReader(run sortedRun, recordSize, bufBytes int) (*runReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &runReader{run: run, f: f, buf: alignedBuffer(bufBytes), recordSize: recordSize, hashed: run.start, hash: xxhash.New()}
+	r := &runReader{run: run, f: f, buf: alignedBuffer(bufBytes), recordSize: recordSize, hash: xxhash.New()}
 	if !r.fill(run.start) {
 		f.Close()
 		return nil, r.err
@@ -246,8 +245,8 @@ func (r *runReader) fill(off int64) bool {
 		return false
 	}
 	r.fileOff, r.cursor = alignedOff, int(off-alignedOff)
-	// A refill rereads the bytes from alignedOff, hashed already.
-	_, _ = r.hash.Write(r.buf[r.hashed-alignedOff : r.valid])
-	r.hashed = alignedOff + int64(r.valid)
+	// A record cut off at the end is hashed once a refill reads it whole.
+	whole := (r.valid - r.cursor) / r.recordSize * r.recordSize
+	_, _ = r.hash.Write(r.buf[r.cursor : r.cursor+whole])
 	return true
 }

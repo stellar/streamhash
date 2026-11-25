@@ -268,7 +268,7 @@ func readSortedFileHeaderAt(path string) (SortedFileHeader, uint64, error) {
 
 // ReadSortedFileHeader reads and checks the header at path: magic, version,
 // payload size, its hash, and that the record count matches the file's length.
-// It does not read the records, so it does not check their hash.
+// It does not read the records, so it checks their hash only when there are none.
 func ReadSortedFileHeader(path string) (SortedFileHeader, error) {
 	h, _, err := readSortedFileHeaderAt(path)
 	return h, err
@@ -327,7 +327,11 @@ func readSortedFileHeader(f *os.File) (SortedFileHeader, uint64, error) {
 		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w: the header counts %d records of %d bytes, the file holds %d bytes of records",
 			f.Name(), sentinel, h.Count, recordSize, body)
 	}
-	return h, binary.LittleEndian.Uint64(fixed[sortedFileRecordsHashOffset:]), nil
+	recordsHash := binary.LittleEndian.Uint64(fixed[sortedFileRecordsHashOffset:])
+	if h.Count == 0 && recordsHash != xxhash.Sum64(nil) {
+		return SortedFileHeader{}, 0, fmt.Errorf("sorted file %s: %w: records", f.Name(), ErrChecksumFailed)
+	}
+	return h, recordsHash, nil
 }
 
 // sortedRun is a sorted file's records: the file offsets where they start

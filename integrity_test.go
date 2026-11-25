@@ -278,6 +278,17 @@ func TestSortedFileUnfinishedWriter(t *testing.T) {
 			r.Close()
 			t.Fatalf("%d records: OpenSortedFile accepted the file", records)
 		}
+		if records == 0 {
+			// As if the unfinished header hashed to the zero it holds.
+			fixed := w.header[:sortedFileFixedSize]
+			binary.LittleEndian.PutUint64(fixed[sortedFileHeaderHashOffset:], sortedFileHeaderHash(fixed, w.header[sortedFileFixedSize:]))
+			if _, err := w.f.WriteAt(fixed[sortedFileHeaderHashOffset:sortedFileMetadataLenOffset], sortedFileHeaderHashOffset); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadSortedFileHeader(path); !errors.Is(err, ErrChecksumFailed) {
+				t.Fatalf("an unfinished empty file with a matching header hash returned %v, want ErrChecksumFailed", err)
+			}
+		}
 		if err := w.f.Close(); err != nil {
 			t.Fatal(err)
 		}
