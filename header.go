@@ -32,6 +32,10 @@ const (
 
 	// ramIndexEntryDataSize is the entry's bytes before its check.
 	ramIndexEntryDataSize = 10
+
+	// maxVariableSectionLen bounds UserMetadata and AlgoConfig, so a corrupt
+	// length fails before Open hashes past them.
+	maxVariableSectionLen = 64 << 10
 )
 
 // header is the 64-byte file header (spec §3.2).

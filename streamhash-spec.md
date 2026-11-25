@@ -317,6 +317,8 @@ Immediately after the header:
 - **UserMetadata** — application-defined bytes, not interpreted by the index. May be zero-length.
 - **AlgoConfig** — per-algorithm configuration. Currently zero-length for both shipped algorithms (they use compile-time constants); reserved for future tunable algorithms.
 
+Each length is at most 65,536 (64 KiB). A reader checks that before it reads or hashes the section, so a corrupt length fails with `ErrCorruptedIndex` at once instead of making the header check (§7.6) hash the rest of the file.
+
 ### 3.4. RAM Index
 
 `NumBlocks + 1` entries. The final entry is a **sentinel**: it stores `KeysBefore == TotalKeys` and the end offset of the last block's metadata, so the last block's size can be computed by subtraction like any other.

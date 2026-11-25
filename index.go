@@ -160,6 +160,9 @@ func (idx *Index) initFromData() error {
 	}
 	userMetadataLen := binary.LittleEndian.Uint32(idx.data[offset:])
 	offset += 4
+	if userMetadataLen > maxVariableSectionLen {
+		return sherr.ErrCorruptedIndex
+	}
 	if offset+uint64(userMetadataLen) > fileSize {
 		return sherr.ErrTruncatedFile
 	}
@@ -172,6 +175,9 @@ func (idx *Index) initFromData() error {
 	}
 	algoConfigLen := binary.LittleEndian.Uint32(idx.data[offset:])
 	offset += 4
+	if algoConfigLen > maxVariableSectionLen {
+		return sherr.ErrCorruptedIndex
+	}
 	if offset+uint64(algoConfigLen) > fileSize {
 		return sherr.ErrTruncatedFile
 	}

@@ -60,6 +60,29 @@ func integrityIndex(t *testing.T) ([]byte, []sortedRecord) {
 	return referenceIndex(t, path, recs, WithPayload(3), WithFingerprint(1), WithMetadata([]byte("user metadata"))), recs
 }
 
+// TestOpenRefusesOversizedSections checks that a section length over the
+// limit fails before Open hashes anything, and that a build refuses user
+// metadata over it.
+func TestOpenRefusesOversizedSections(t *testing.T) {
+	data, _ := integrityIndex(t)
+	algoLenOff := headerSize + 4 + len("user metadata")
+	for _, off := range []int{headerSize, algoLenOff} {
+		bad := slices.Clone(data)
+		binary.LittleEndian.PutUint32(bad[off:], maxVariableSectionLen+1)
+		if _, err := OpenBytes(bad); !errors.Is(err, ErrCorruptedIndex) {
+			t.Fatalf("a section length of %d at byte %d returned %v, want ErrCorruptedIndex", maxVariableSectionLen+1, off, err)
+		}
+	}
+
+	recs := uniqueSortedRecords(newTestRNG(t), 100, 3)
+	path := filepath.Join(t.TempDir(), "big-metadata.idx")
+	b, err := NewSortedBuilder(context.Background(), path, uint64(len(recs)), WithPayload(3), WithMetadata(make([]byte, maxVariableSectionLen+1)))
+	if err == nil {
+		b.Close()
+		t.Fatal("a build accepted user metadata over the limit")
+	}
+}
+
 // TestOpenChecksHeaderHash flips a bit in every byte Open reads: the header,
 // the user metadata and the algorithm config.
 func TestOpenChecksHeaderHash(t *testing.T) {
