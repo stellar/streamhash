@@ -191,12 +191,16 @@ func (w *SortedFileWriter) Finish() error {
 	return nil
 }
 
-// commit flushes, patches the count and the hashes, syncs and closes, in that
-// order: a short file's header is still in the buffer until the flush, which
-// also completes the records' hash, and ENOSPC and EIO can surface only at
-// close.
+// commit flushes and syncs the records, patches the count and the hashes,
+// syncs again and closes. The header goes last, so a header that passes its
+// check means the records are on disk. A short file's header is still in the
+// buffer until the flush, which also completes the records' hash, and ENOSPC
+// and EIO can surface only at close.
 func (w *SortedFileWriter) commit() error {
 	err := w.bw.Flush()
+	if err == nil {
+		err = w.f.Sync()
+	}
 	if err == nil {
 		fixed := w.header[:sortedFileFixedSize]
 		binary.LittleEndian.PutUint64(fixed[sortedFileCountOffset:], w.count)
