@@ -406,6 +406,7 @@ func TestSortedFileReaderRejectsUnsorted(t *testing.T) {
 		t.Fatal(err)
 	}
 	swapRecords(data, MinKeySize+2, 5)
+	rehashSortedFile(data)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}

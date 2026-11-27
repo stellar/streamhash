@@ -275,6 +275,7 @@ func TestWithYieldEchoKeepsTheFailure(t *testing.T) {
 	writeSortedFile(t, path, SortedFileConfig{PayloadSize: 3}, uniqueSortedRecords(rng, 30000, 3))
 	data := readFileBytes(t, path)
 	swapRecords(data, MinKeySize+3, 777)
+	rehashSortedFile(data)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
