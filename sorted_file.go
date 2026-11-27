@@ -420,6 +420,7 @@ type SortedFileReader struct {
 	left        uint64
 	last        sortKey
 	record      [MinKeySize + maxPayloadSize]byte
+	err         error
 }
 
 // OpenSortedFile opens the sorted file at path to read its records in order.
@@ -449,7 +450,16 @@ func OpenSortedFile(path string) (*SortedFileReader, error) {
 // Next returns the next record's key and payload, and io.EOF after the last
 // record. A record out of order fails with ErrUnsortedInput. If the records
 // do not match the file's hash, the last one fails with ErrChecksumFailed.
+// After an error, every later call returns it.
 func (r *SortedFileReader) Next() (key [MinKeySize]byte, payload uint64, err error) {
+	if r.err != nil {
+		return key, 0, r.err
+	}
+	defer func() {
+		if err != nil {
+			r.err = err
+		}
+	}()
 	if r.left == 0 {
 		return key, 0, io.EOF
 	}

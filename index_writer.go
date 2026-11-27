@@ -71,9 +71,12 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 	// Compute variable section sizes
 	userMetadataLen := len(cfg.userMetadata)
 	if userMetadataLen > maxVariableSectionLen {
-		return nil, fmt.Errorf("user metadata size %d exceeds maximum of %d bytes", userMetadataLen, maxVariableSectionLen)
+		return nil, fmt.Errorf("%w: %d bytes", ErrMetadataTooLarge, userMetadataLen)
 	}
 	algoConfigLen := algo.GlobalConfigSize()
+	if algoConfigLen > maxVariableSectionLen {
+		return nil, fmt.Errorf("algorithm config size %d exceeds maximum of %d bytes", algoConfigLen, maxVariableSectionLen)
+	}
 
 	// Estimate total file size for pre-allocation
 	estimatedSize := estimateFileSizeForAlgo(cfg, numBlocks, algo, userMetadataLen, algoConfigLen)

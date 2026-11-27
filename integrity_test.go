@@ -79,7 +79,9 @@ func TestOpenRefusesOversizedSections(t *testing.T) {
 	b, err := NewSortedBuilder(context.Background(), path, uint64(len(recs)), WithPayload(3), WithMetadata(make([]byte, maxVariableSectionLen+1)))
 	if err == nil {
 		b.Close()
-		t.Fatal("a build accepted user metadata over the limit")
+	}
+	if !errors.Is(err, ErrMetadataTooLarge) {
+		t.Fatalf("a build with user metadata over the limit returned %v, want ErrMetadataTooLarge", err)
 	}
 }
 
@@ -245,6 +247,9 @@ func TestSortedFileRecordsHash(t *testing.T) {
 		}
 		if _, _, err := r.Next(); !errors.Is(err, ErrChecksumFailed) {
 			t.Fatalf("record %d: Next returned %v for the last record, want ErrChecksumFailed", i, err)
+		}
+		if _, _, err := r.Next(); !errors.Is(err, ErrChecksumFailed) {
+			t.Fatalf("record %d: Next returned %v after the failed record, want ErrChecksumFailed again", i, err)
 		}
 		r.Close()
 	}

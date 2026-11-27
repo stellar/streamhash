@@ -923,6 +923,7 @@ Error names are from the reference implementation; other implementations may dif
 | `ErrDuplicateKey` | Bijection: identical `k0` and `k1`. PTRHash: two keys in a bucket share `k0 ^ k1` (§7.1) |
 | `ErrPayloadTooLarge` | PayloadSize > 8 |
 | `ErrFingerprintTooLarge` | FingerprintSize > 4 |
+| `ErrMetadataTooLarge` | UserMetadata > 64 KiB |
 | `ErrPayloadOverflow` | payload value exceeds PayloadSize capacity |
 | `ErrKeyCountMismatch` | declared `totalKeys` ≠ keys added |
 | `ErrTooManyKeys` | key count exceeds `2^40 − 1` |
@@ -952,6 +953,7 @@ An index with `N = 0` keys is not an error: it builds successfully, and every `Q
 | `ErrInvalidMagic` | magic ≠ `0x53545346` |
 | `ErrInvalidVersion` | version ≠ `0x0002` |
 | `ErrCorruptedIndex` | PayloadSize > 8, or MetadataLen > 65,536 |
+| `ErrChecksumFailed` | HeaderHash mismatch whenever the header is read; RecordsHash mismatch once every record is read, or when the header is read for a file with no records (§7.6) |
 | `ErrUnsortedInput` | a key sorts before the key before it, when it is written, merged, read or built from; or a build finds a record outside its stripe |
 
 ### 7.6. Integrity and corruption safety

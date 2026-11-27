@@ -176,7 +176,7 @@ rank, err := idx.QueryRank(streamhash.PreHash(originalKey))
 | `WithFingerprint(sizeBytes)` | Fingerprint size in bytes (0-4) | 0 (disabled) |
 | `WithAlgorithm(algo)` | `AlgoBijection` or `AlgoPTRHash` | `AlgoBijection` |
 | `WithGlobalSeed(seed)` | Hash seed (change on build failure) | fixed default |
-| `WithMetadata(data)` | Arbitrary metadata stored in the file | none |
+| `WithMetadata(data)` | Arbitrary metadata stored in the file, at most 64 KiB | none |
 | `WithBytesPerSync(n)` | Start writeback of the index every `n` bytes written (Linux) | 0 (left to the kernel) |
 | `WithYield(yield)` | Call `yield` before each block: one that blocks holds the build back, an error fails it | none (never yields) |
 

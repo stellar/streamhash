@@ -20,6 +20,7 @@ var (
 var (
 	ErrPayloadTooLarge             = errors.New("streamhash: PayloadSize exceeds maximum 8 bytes")
 	ErrFingerprintTooLarge         = errors.New("streamhash: FingerprintSize exceeds maximum (4 bytes)")
+	ErrMetadataTooLarge            = errors.New("streamhash: user metadata exceeds maximum (64 KiB)")
 	ErrSplitBucketSeedSearchFailed = errors.New("streamhash: split bucket seed search failed - retry with different globalSeed")
 	ErrIndistinguishableHashes     = errors.New("streamhash: indistinguishable hashes in bucket - retry with different globalSeed")
 )

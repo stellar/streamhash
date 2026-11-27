@@ -264,7 +264,8 @@ func (idx *Index) Close() error {
 
 // QueryRank returns the rank (0-based index) for a key.
 // This is the core MPHF operation.
-// Returns ErrKeyTooShort if key is less than 16 bytes.
+// Returns ErrKeyTooShort if key is less than 16 bytes, and ErrChecksumFailed if
+// a RAM index entry it reads fails its check.
 func (idx *Index) QueryRank(key []byte) (uint64, error) {
 	if idx.closed.Load() {
 		return 0, sherr.ErrIndexClosed
@@ -542,7 +543,8 @@ func (idx *Index) WithPayload() (*PayloadIndex, error) {
 }
 
 // QueryPayload returns the rank and payload for a key.
-// Returns ErrKeyTooShort if key is less than 16 bytes.
+// Returns ErrKeyTooShort if key is less than 16 bytes, and ErrChecksumFailed if
+// a RAM index entry it reads fails its check.
 func (pi *PayloadIndex) QueryPayload(key []byte) (rank uint64, payload uint64, err error) {
 	if pi.closed.Load() {
 		return 0, 0, sherr.ErrIndexClosed
