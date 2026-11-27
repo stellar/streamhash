@@ -302,6 +302,7 @@ func TestBuildFromSortedFilesRejects(t *testing.T) {
 	swapped := func(path string, recordSize, i int) string {
 		data := readFileBytes(t, path)
 		swapRecords(data, recordSize, i)
+		rehashSortedFile(data)
 		out := filepath.Join(dir, fmt.Sprintf("swapped%d-%s", i, filepath.Base(path)))
 		if err := os.WriteFile(out, data, 0o600); err != nil {
 			t.Fatal(err)
@@ -313,6 +314,7 @@ func TestBuildFromSortedFilesRejects(t *testing.T) {
 		data := readFileBytes(t, path)
 		span := data[sortedFileAlign+to*recordSize : sortedFileAlign+(from+1)*recordSize]
 		copy(span, slices.Concat(span[len(span)-recordSize:], span[:len(span)-recordSize]))
+		rehashSortedFile(data)
 		out := filepath.Join(dir, fmt.Sprintf("moved%d-%d-%s", from, to, filepath.Base(path)))
 		if err := os.WriteFile(out, data, 0o600); err != nil {
 			t.Fatal(err)

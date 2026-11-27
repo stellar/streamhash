@@ -174,5 +174,8 @@ func FuzzOpenCorruptIndex(f *testing.F) {
 		}()
 
 		exerciseCorruptIndex(data, base.keys, base.hasPayload)
+		// With the checksums recomputed, the edits reach the code behind them.
+		rehashIndex(data)
+		exerciseCorruptIndex(data, base.keys, base.hasPayload)
 	})
 }

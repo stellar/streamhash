@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"sync/atomic"
 
@@ -16,17 +15,13 @@ import (
 const ramIndexBufEntries = (64 << 10) / ramIndexEntrySize
 
 // indexWriter writes index data to disk via positional *os.File.WriteAt calls.
-// File layout: [Header 64B][UserMetaLen 4B][UserMeta][AlgoConfigLen 4B][AlgoConfig][RAM Index (N+1)×10B][Payload Region][Metadata Region][Footer 32B]
+// File layout: [Header 64B][UserMetaLen 4B][UserMeta][AlgoConfigLen 4B][AlgoConfig][RAM Index (N+1)×14B][Payload Region][Metadata Region][Footer 32B]
 type indexWriter struct {
 	file *os.File
 
 	// Region offsets (computed upfront for separated layout)
 	payloadRegionOffset  uint64
 	metadataRegionOffset uint64
-
-	// Variable section offsets
-	userMetadataOffset uint64
-	algoConfigOffset   uint64
 
 	// Write tracking
 	metadataWriteOffset uint64 // Current write position in metadata region
@@ -75,13 +70,13 @@ func (iw *indexWriter) writeAt(b []byte, off int64) error {
 func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockBuilder) (*indexWriter, error) {
 	// Compute variable section sizes
 	userMetadataLen := len(cfg.userMetadata)
-	// The length is written to disk as a uint32, so reject anything larger.
-	// Comparing via uint64 keeps this compiling on 32-bit builds, where the
-	// math.MaxUint32 constant doesn't fit in an int.
-	if uint64(userMetadataLen) > math.MaxUint32 {
-		return nil, fmt.Errorf("user metadata size %d exceeds maximum of %d bytes", userMetadataLen, uint64(math.MaxUint32))
+	if userMetadataLen > maxVariableSectionLen {
+		return nil, fmt.Errorf("%w: %d bytes", ErrMetadataTooLarge, userMetadataLen)
 	}
 	algoConfigLen := algo.GlobalConfigSize()
+	if algoConfigLen > maxVariableSectionLen {
+		return nil, fmt.Errorf("algorithm config size %d exceeds maximum of %d bytes", algoConfigLen, maxVariableSectionLen)
+	}
 
 	// Estimate total file size for pre-allocation
 	estimatedSize := estimateFileSizeForAlgo(cfg, numBlocks, algo, userMetadataLen, algoConfigLen)
@@ -95,9 +90,7 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 
 	// Compute region offsets for separated layout with variable sections
 	// Layout: [Header][UserMetaLen 4B][UserMeta][AlgoConfigLen 4B][AlgoConfig][RAM Index]...
-	userMetadataOffset := uint64(headerSize)
-	algoConfigOffset := userMetadataOffset + 4 + uint64(userMetadataLen)
-	ramIndexOffset := algoConfigOffset + 4 + uint64(algoConfigLen)
+	ramIndexOffset := uint64(headerSize) + 4 + uint64(userMetadataLen) + 4 + uint64(algoConfigLen)
 	ramIndexSize := uint64(numBlocks+1) * uint64(ramIndexEntrySize)
 	payloadRegionOffset := ramIndexOffset + ramIndexSize
 	payloadRegionSize := cfg.totalKeys * uint64(entrySize)
@@ -113,8 +106,6 @@ func newIndexWriter(path string, cfg *buildConfig, numBlocks uint32, algo blockB
 		file:                 file,
 		payloadRegionOffset:  payloadRegionOffset,
 		metadataRegionOffset: metadataRegionOffset,
-		userMetadataOffset:   userMetadataOffset,
-		algoConfigOffset:     algoConfigOffset,
 		metadataWriteOffset:  metadataRegionOffset,
 		ramIndexWriteOffset:  ramIndexOffset,
 		ramIndexBuf:          make([]byte, 0, min(ramIndexSize, ramIndexBufEntries*ramIndexEntrySize)),
@@ -198,12 +189,13 @@ func (iw *indexWriter) recordAndWriteMetadata(metadata []byte) error {
 // appendRAMIndexEntry buffers the RAM index entry for the current key count
 // and metadata write position.
 func (iw *indexWriter) appendRAMIndexEntry() {
-	var entry [ramIndexEntrySize]byte
+	// Encoded in place: the check would move a local array to the heap.
+	n := len(iw.ramIndexBuf)
+	iw.ramIndexBuf = append(iw.ramIndexBuf, make([]byte, ramIndexEntrySize)...)
 	encodeRAMIndexEntryTo(ramIndexEntry{
 		KeysBefore:     iw.keyCount,
 		MetadataOffset: iw.metadataWriteOffset - iw.metadataRegionOffset,
-	}, entry[:])
-	iw.ramIndexBuf = append(iw.ramIndexBuf, entry[:]...)
+	}, iw.blockCount, iw.ramIndexBuf[n:])
 }
 
 // flushRAMIndex writes the buffered RAM index entries after those already
@@ -256,8 +248,8 @@ func (iw *indexWriter) commitBlockWithData(metadata []byte, payloads []byte, num
 	return nil
 }
 
-// finalize completes the index file by writing header, variable sections,
-// the rest of the RAM index, and footer via pwrite.
+// finalize completes the index file via pwrite: the rest of the RAM index and
+// the footer, a sync, then the header and variable sections, and another sync.
 // On error, delegates to close() for idempotent cleanup.
 // On success, nils file so that close() is a safe no-op.
 func (iw *indexWriter) finalize() error {
@@ -271,40 +263,6 @@ func (iw *indexWriter) finalize() error {
 	// Get final hashes from streaming hashers (no re-read of regions needed!)
 	payloadRegionHash := iw.payloadHasher.Sum64()
 	metadataRegionHash := iw.metadataHasher.Sum64()
-
-	// Update header
-	iw.header.TotalKeys = iw.keyCount
-	iw.header.NumBlocks = iw.blockCount
-
-	// Write header at offset 0
-	var headerBuf [headerSize]byte
-	iw.header.encodeTo(headerBuf[:])
-	if err := iw.writeAt(headerBuf[:], 0); err != nil {
-		primaryErr := fmt.Errorf("write header failed: %w", err)
-		return errors.Join(primaryErr, iw.close())
-	}
-
-	// Write variable-length sections
-	// UserMetadata: [length 4B][data]
-	userMetaBuf := make([]byte, 4+len(iw.userMetadata))
-	binary.LittleEndian.PutUint32(userMetaBuf, uint32(len(iw.userMetadata)))
-	copy(userMetaBuf[4:], iw.userMetadata)
-	if err := iw.writeAt(userMetaBuf, int64(iw.userMetadataOffset)); err != nil {
-		primaryErr := fmt.Errorf("write user metadata failed: %w", err)
-		return errors.Join(primaryErr, iw.close())
-	}
-
-	// AlgoConfig: [length 4B][data]
-	algoConfigLen := iw.algo.GlobalConfigSize()
-	algoConfigBuf := make([]byte, 4+algoConfigLen)
-	binary.LittleEndian.PutUint32(algoConfigBuf, uint32(algoConfigLen))
-	if algoConfigLen > 0 {
-		iw.algo.EncodeGlobalConfigInto(algoConfigBuf[4:])
-	}
-	if err := iw.writeAt(algoConfigBuf, int64(iw.algoConfigOffset)); err != nil {
-		primaryErr := fmt.Errorf("write algo config failed: %w", err)
-		return errors.Join(primaryErr, iw.close())
-	}
 
 	// Write the rest of the RAM index, ending with its sentinel entry (spec §3.4)
 	iw.appendRAMIndexEntry()
@@ -332,6 +290,34 @@ func (iw *indexWriter) finalize() error {
 	}
 
 	// Flush data to disk for durability
+	if err := iw.file.Sync(); err != nil {
+		primaryErr := fmt.Errorf("fsync failed: %w", err)
+		return errors.Join(primaryErr, iw.close())
+	}
+
+	// The header goes last, once the rest is on disk, so a header that passes
+	// its check means a complete file.
+	iw.header.TotalKeys = iw.keyCount
+	iw.header.NumBlocks = iw.blockCount
+
+	// The header, then the variable-length sections, each [length 4B][data]:
+	// UserMetadata, then AlgoConfig
+	algoConfigLen := iw.algo.GlobalConfigSize()
+	prefix := make([]byte, headerSize+4+len(iw.userMetadata)+4+algoConfigLen)
+	iw.header.encodeTo(prefix)
+	userMetaBuf := prefix[headerSize:]
+	binary.LittleEndian.PutUint32(userMetaBuf, uint32(len(iw.userMetadata)))
+	copy(userMetaBuf[4:], iw.userMetadata)
+	algoConfigBuf := userMetaBuf[4+len(iw.userMetadata):]
+	binary.LittleEndian.PutUint32(algoConfigBuf, uint32(algoConfigLen))
+	if algoConfigLen > 0 {
+		iw.algo.EncodeGlobalConfigInto(algoConfigBuf[4:])
+	}
+	binary.LittleEndian.PutUint64(prefix[headerHashOffset:], headerHash(prefix))
+	if err := iw.writeAt(prefix, 0); err != nil {
+		primaryErr := fmt.Errorf("write header failed: %w", err)
+		return errors.Join(primaryErr, iw.close())
+	}
 	if err := iw.file.Sync(); err != nil {
 		primaryErr := fmt.Errorf("fsync failed: %w", err)
 		return errors.Join(primaryErr, iw.close())

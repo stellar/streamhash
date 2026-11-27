@@ -18,6 +18,7 @@ var (
 var (
 	ErrPayloadTooLarge             = sherr.ErrPayloadTooLarge
 	ErrFingerprintTooLarge         = sherr.ErrFingerprintTooLarge
+	ErrMetadataTooLarge            = sherr.ErrMetadataTooLarge
 	ErrSplitBucketSeedSearchFailed = sherr.ErrSplitBucketSeedSearchFailed
 	ErrIndistinguishableHashes     = sherr.ErrIndistinguishableHashes
 

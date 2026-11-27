@@ -531,7 +531,7 @@ func TestRAMIndexEntryRoundtrip(t *testing.T) {
 			MetadataOffset: rng.Uint64() & mask40,
 		}
 
-		encodeRAMIndexEntryTo(e, buf)
+		encodeRAMIndexEntryTo(e, uint32(i), buf)
 		got := decodeRAMIndexEntry(buf)
 
 		if got.KeysBefore != e.KeysBefore {

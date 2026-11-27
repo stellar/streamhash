@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/cespare/xxhash/v2"
 )
 
 type sortedRecord struct {
@@ -132,14 +134,16 @@ func TestSortedFileLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := make([]byte, 4096)
-	copy(want, []byte{0x46, 0x53, 0x54, 0x53, 0x01, 0x00, 0x03, 0x00})
+	copy(want, []byte{0x46, 0x53, 0x54, 0x53, 0x02, 0x00, 0x03, 0x00})
 	binary.LittleEndian.PutUint64(want[8:], 2)
-	binary.LittleEndian.PutUint32(want[16:], 4)
-	copy(want[20:], "meta")
+	binary.LittleEndian.PutUint32(want[32:], 4)
+	copy(want[36:], "meta")
 	want = append(want, recs[0].key[:]...)
 	want = append(want, 0x01, 0x02, 0x03)
 	want = append(want, recs[1].key[:]...)
 	want = append(want, 0x04, 0x05, 0x06)
+	binary.LittleEndian.PutUint64(want[16:], xxhash.Sum64(want[4096:]))
+	binary.LittleEndian.PutUint64(want[24:], xxhash.Sum64(slices.Concat(want[0:24], want[32:40])))
 	if !bytes.Equal(data, want) {
 		t.Fatalf("file bytes differ from the layout\ngot:  %x\nwant: %x", data, want)
 	}
@@ -351,6 +355,7 @@ func TestReadSortedFileHeaderRejects(t *testing.T) {
 	mutated := func(data []byte, mutate func([]byte)) []byte {
 		b := slices.Clone(data)
 		mutate(b)
+		rehashSortedFile(b)
 		return b
 	}
 
@@ -361,19 +366,19 @@ func TestReadSortedFileHeaderRejects(t *testing.T) {
 	}{
 		{"shorter than the fixed header", data3[:sortedFileFixedSize-1], ErrTruncatedFile},
 		{"cut in the padding", data3[:100], ErrTruncatedFile},
-		{"metadata longer than the file", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint32(b[16:], 5000) }), ErrTruncatedFile},
+		{"metadata longer than the file", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint32(b[32:], 5000) }), ErrTruncatedFile},
 		{"cut mid-record", data3[:len(data3)-1], ErrTruncatedFile},
 		{"cut a whole record", data3[:len(data3)-19], ErrTruncatedFile},
 		{"count one too large", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint64(b[8:], 11) }), ErrTruncatedFile},
 		// 16 × (10 + 2^60) wraps to 16 × 10, so only a division catches it.
 		{"count that overflows", mutated(data0, func(b []byte) { binary.LittleEndian.PutUint64(b[8:], 10+1<<60) }), ErrTruncatedFile},
 		{"an extra record", append(slices.Clone(data3), make([]byte, 19)...), ErrKeyCountMismatch},
-		{"an unfinished writer's count of 0", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint64(b[8:], 0) }), ErrKeyCountMismatch},
+		{"a count of 0", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint64(b[8:], 0) }), ErrKeyCountMismatch},
 		{"wrong magic", mutated(data3, func(b []byte) { b[0] ^= 1 }), ErrInvalidMagic},
 		{"an index file", index, ErrInvalidMagic},
-		{"wrong version", mutated(data3, func(b []byte) { b[4] = 2 }), ErrInvalidVersion},
+		{"wrong version", mutated(data3, func(b []byte) { b[4] = 1 }), ErrInvalidVersion},
 		{"payload size over 8", mutated(data3, func(b []byte) { b[6] = maxPayloadSize + 1 }), ErrCorruptedIndex},
-		{"metadata length over the maximum", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint32(b[16:], maxSortedFileMetadata+1) }), ErrCorruptedIndex},
+		{"metadata length over the maximum", mutated(data3, func(b []byte) { binary.LittleEndian.PutUint32(b[32:], maxSortedFileMetadata+1) }), ErrCorruptedIndex},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(dir, "bad.sorted")
