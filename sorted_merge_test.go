@@ -173,6 +173,7 @@ func TestMergeSortedFilesRejectsUnsortedInput(t *testing.T) {
 	for _, i := range []int{0, 431, len(recs) - 2} {
 		bad := slices.Clone(data)
 		swapRecords(bad, MinKeySize+3, i)
+		rehashSortedFile(bad)
 		corrupt := filepath.Join(dir, "corrupt.sorted")
 		if err := os.WriteFile(corrupt, bad, 0o600); err != nil {
 			t.Fatal(err)
