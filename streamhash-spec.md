@@ -65,7 +65,7 @@ With a configured payload size (1–8 bytes), the index doubles as a **static pe
 | | Bijection | PTRHash |
 |---|---|---|
 | **Best for** | Compactness, low build RAM | Query speed |
-| Index size | ~2.46 bits/key | ~2.70 bits/key |
+| Index size | ~2.47 bits/key | ~2.70 bits/key |
 | Query latency (CPU only) | ~1.5 µs (decode ≤128 buckets) | ~0.07 µs (one pilot byte) |
 | Build throughput (4 workers) | ~65 M keys/sec | ~62 M keys/sec |
 | Peak heap (4 workers) | ~8 MB | ~61 MB |
@@ -84,7 +84,7 @@ Reference measurements on an Apple M1 Max, 100M keys, MPHF mode, pre-sorted inpu
 
 | Metric | Bijection | PTRHash |
 |--------|-----------|---------|
-| Index size (MPHF) | ~2.46 bits/key | ~2.70 bits/key |
+| Index size (MPHF) | ~2.47 bits/key | ~2.70 bits/key |
 | Query latency (CPU only) | ~1.5 µs | ~0.07 µs |
 | Build throughput (1 / 4 workers) | ~16 / ~65 M keys/sec | ~17 / ~62 M keys/sec |
 | Peak heap (1 / 4 workers) | ~1 / ~8 MB | ~8 / ~61 MB |
@@ -222,6 +222,8 @@ function Query(key) → (rank, error):
 
     entry     = ramIndex[blockIdx]                       // RAM index (§3.4)
     nextEntry = ramIndex[blockIdx + 1]
+    if either entry's Check does not match:              // §3.4
+        return error(ChecksumFailed)
     keysBefore  = entry.KeysBefore
     keysInBlock = nextEntry.KeysBefore - entry.KeysBefore
     if keysInBlock == 0:
@@ -254,7 +256,7 @@ The format is language-independent. The byte layouts, encodings, and hash functi
 +--------------------------------------------------+
 |  AlgoConfigLen (4 B) + AlgoConfig (variable)     |
 +--------------------------------------------------+
-|  RAM Index   ((NumBlocks + 1) × 10 B)            |
+|  RAM Index   ((NumBlocks + 1) × 14 B)            |
 +--------------------------------------------------+
 |  Payload Region  (N × entrySize B)               |
 +--------------------------------------------------+
@@ -272,7 +274,7 @@ Offset            Size                Content
 68                UML B               UserMetadata
 68+UML            4 B                 AlgoConfigLen (uint32_le)
 72+UML            ACL B               AlgoConfig
-72+UML+ACL        (NumBlocks+1)×10 B  RAM Index
+72+UML+ACL        (NumBlocks+1)×14 B  RAM Index
 ramIndexEnd       N × entrySize B     Payload Region
 payloadEnd        variable            Metadata Region
 metadataEnd       32 B                Footer
@@ -285,16 +287,23 @@ where `UML = UserMetadataLen`, `ACL = AlgoConfigLen`, `N = TotalKeys`, and `entr
 | Offset | Size | Field | Type | Description |
 |--------|------|-------|------|-------------|
 | 0 | 4 | Magic | uint32_le | `0x53544D48` ("STMH") |
-| 4 | 2 | Version | uint16_le | `0x0001` |
+| 4 | 2 | Version | uint16_le | `0x0002` |
 | 6 | 8 | TotalKeys | uint64_le | Total keys (N) |
 | 14 | 4 | NumBlocks | uint32_le | Number of blocks |
 | 18 | 4 | PayloadSize | uint32_le | Payload bytes per key (0 = MPHF only) |
 | 22 | 1 | FingerprintSize | uint8 | Fingerprint bytes (0–4) |
 | 23 | 8 | Seed | uint64_le | Global hash seed |
 | 31 | 2 | BlockAlgorithm | uint16_le | 0 = Bijection, 1 = PTRHash |
-| 33 | 31 | Reserved | bytes | Zero-filled |
+| 33 | 23 | Reserved | bytes | Zero-filled |
+| 56 | 8 | HeaderHash | uint64_le | xxHash64 of the header and the variable-length sections |
 
 `TotalBuckets`, `BucketsPerBlock`, and similar values are **not** in the header — they are algorithm-internal and derived from `NumBlocks` (§2.3). Note that `Seed` and `BlockAlgorithm` are intentionally unaligned (they start at offsets 23 and 31).
+
+`HeaderHash` is canonical unseeded xxHash64 of every byte before the RAM index except its own:
+
+```
+HeaderHash = xxHash64(file[0:56] || file[64 : 72+UML+ACL])
+```
 
 ### 3.3. Variable-length sections
 
@@ -308,19 +317,29 @@ Immediately after the header:
 - **UserMetadata** — application-defined bytes, not interpreted by the index. May be zero-length.
 - **AlgoConfig** — per-algorithm configuration. Currently zero-length for both shipped algorithms (they use compile-time constants); reserved for future tunable algorithms.
 
+Each length is at most 65,536 (64 KiB). A reader checks that before it reads or hashes the section, so a corrupt length fails with `ErrCorruptedIndex` at once instead of making the header check (§7.6) hash the rest of the file.
+
 ### 3.4. RAM Index
 
 `NumBlocks + 1` entries. The final entry is a **sentinel**: it stores `KeysBefore == TotalKeys` and the end offset of the last block's metadata, so the last block's size can be computed by subtraction like any other.
 
-**Entry (10 bytes):**
+**Entry (14 bytes):**
 
 | Offset | Size | Field | Type |
 |--------|------|-------|------|
 | 0 | 5 | KeysBefore | uint40_le |
 | 5 | 5 | MetadataOffset | uint40_le |
+| 10 | 4 | Check | uint32_le |
 
 - `KeysBefore` — cumulative keys in all blocks before this one.
 - `MetadataOffset` — byte offset of this block's metadata, relative to the start of the metadata region.
+- `Check` — CRC-32C (Castagnoli) of the entry's first 10 bytes, with the entry's index as the running CRC it continues from:
+
+  ```
+  Check(i) = crc32c_update(crc = i, entry[0:10])
+  ```
+
+  `crc32c_update(0, data)` is the standard CRC-32C of `data` (in Go, `crc32.Update` with the Castagnoli table). Starting from `i` gives the standard CRC-32C of the same 10 bytes with `LittleEndian.Bytes4(i)` XORed into the first four, so an intact entry read at another block's position fails too. The sentinel has index `NumBlocks`. A CRC detects every single flipped bit and every burst of up to 32 bits.
 
 Per-block values are derived by subtraction (this is the query path in §2.6):
 
@@ -331,7 +350,7 @@ metadataSlice = metadataRegion[ramIndex[b].MetadataOffset : ramIndex[b+1].Metada
 
 Payloads need no offset in the index — they are at a fixed stride: `payloadOffset = rank × entrySize`.
 
-**The RAM index is an optimization, not a requirement.** It lives at a fixed, computable file offset, so a query can instead read the two needed entries (20 contiguous bytes) straight from disk — one extra read per query. Keeping it in memory is cheap (10 B/block, e.g. ~32 KB for a 10M-key Bijection index of ~3,256 blocks), so the reference implementation does.
+**The RAM index is an optimization, not a requirement.** It lives at a fixed, computable file offset, so a query can instead read the two needed entries (28 contiguous bytes) straight from disk — one extra read per query. Keeping it in memory is cheap (14 B/block, e.g. ~46 KB for a 10M-key Bijection index of ~3,256 blocks), so the reference implementation does.
 
 ### 3.5. Payload Region
 
@@ -367,7 +386,7 @@ Empty blocks (`keysInBlock = 0`) still occupy a metadata entry, so block offsets
 | 8 | 8 | MetadataRegionHash | uint64_le |
 | 16 | 16 | Reserved | bytes |
 
-Both use canonical **unseeded xxHash64**:
+The reserved bytes are zero, and `Verify` rejects a footer where they are not. Both hashes use canonical **unseeded xxHash64**:
 
 - **MetadataRegionHash** — a single pass over the raw metadata-region bytes (region start to footer start).
 - **PayloadRegionHash** — a deterministic **hash-of-hashes** so it can be folded incrementally during a parallel build:
@@ -394,26 +413,26 @@ A minimal Bijection index, 5 keys in 2 blocks, MPHF mode (no payloads or fingerp
 ```
 Offset  Bytes                                            Meaning
 ────────────────────────────────────────────────────────────────────────────
-0x0000  48 4D 54 53 01 00 05 00 00 00 00 00 00 00 02 00  Magic "STMH", Version 1,
+0x0000  48 4D 54 53 02 00 05 00 00 00 00 00 00 00 02 00  Magic "STMH", Version 2,
                                                           TotalKeys=5, NumBlocks=2 (lo)
 0x0010  00 00 00 00 00 00 00 12 34 56 78 9A BC DE F0 00  NumBlocks (hi), PayloadSize=0,
                                                           FingerprintSize=0,
                                                           Seed=0xF0DEBC9A78563412,
                                                           BlockAlgorithm=0 (lo, 0x1F–0x20)
-0x0020  00 ... (zeros)                                   BlockAlgorithm (hi) + Reserved (0x21–0x3F)
-0x0030  00 ... (zeros)                                   Reserved
+0x0020  00 ... (zeros)                                   BlockAlgorithm (hi) + Reserved (0x21–0x37)
+0x0038  9F E6 D0 68 62 4B BF DF                          HeaderHash
 0x0040  00 00 00 00                                      UserMetadataLen = 0
 0x0044  00 00 00 00                                      AlgoConfigLen = 0
-0x0048  00 00 00 00 00  00 00 00 00 00                   RAM[0]: KeysBefore=0,  MetaOff=0
-0x0052  03 00 00 00 00  A5 00 00 00 00                   RAM[1]: KeysBefore=3,  MetaOff=0xA5
-0x005C  05 00 00 00 00  42 01 00 00 00                   RAM[2] sentinel: KeysBefore=5,
-                                                          MetaOff=0x142
-0x0066  ... (block 0 metadata, 0xA5 = 165 B)             Metadata region begins here
-0x010B  ... (block 1 metadata, 0x9D = 157 B)
-0x01A8  [32-byte footer]                                 Footer
+0x0048  00 00 00 00 00  00 00 00 00 00  6B F0 DD E3      RAM[0]: KeysBefore=0,  MetaOff=0, Check
+0x0056  03 00 00 00 00  A5 00 00 00 00  C7 C0 C3 DD      RAM[1]: KeysBefore=3,  MetaOff=0xA5, Check
+0x0064  05 00 00 00 00  42 01 00 00 00  BC 60 90 02      RAM[2] sentinel: KeysBefore=5,
+                                                          MetaOff=0x142, Check
+0x0072  ... (block 0 metadata, 0xA5 = 165 B)             Metadata region begins here
+0x0117  ... (block 1 metadata, 0x9D = 157 B)
+0x01B4  [32-byte footer]                                 Footer
 ```
 
-The metadata region starts at `0x66` (RAM index ends at `0x48 + 3×10 = 0x66`; the payload region is empty). The per-block byte sizes shown are illustrative encoded lengths; they come straight from the RAM-index offsets by subtraction: block 0 = `0xA5 − 0 = 165 B`, block 1 = `0x142 − 0xA5 = 0x9D = 157 B`. Block 1 here happens to equal the empty-block Bijection size from §3.6 (157 B) purely by coincidence — there is nothing to reconcile between the 165 B and 157 B figures. The footer therefore sits at `0x66 + 0x142 = 0x1A8`.
+The metadata region starts at `0x72` (RAM index ends at `0x48 + 3×14 = 0x72`; the payload region is empty). The per-block byte sizes shown are illustrative encoded lengths; they come straight from the RAM-index offsets by subtraction: block 0 = `0xA5 − 0 = 165 B`, block 1 = `0x142 − 0xA5 = 0x9D = 157 B`. Block 1 here happens to equal the empty-block Bijection size from §3.6 (157 B) purely by coincidence — there is nothing to reconcile between the 165 B and 157 B figures. The footer therefore sits at `0x72 + 0x142 = 0x1B4`.
 
 ### 3.9. Sorted files
 
@@ -432,14 +451,25 @@ A sorted file is not an index. It holds keys with their payloads in key order, i
 | Offset | Size | Field | Type | Description |
 |--------|------|-------|------|-------------|
 | 0 | 4 | Magic | uint32_le | `0x53545346` ("STSF") |
-| 4 | 2 | Version | uint16_le | `0x0001` |
+| 4 | 2 | Version | uint16_le | `0x0002` |
 | 6 | 1 | PayloadSize | uint8 | Payload bytes per record (0–8) |
 | 7 | 1 | Reserved | byte | Zero |
 | 8 | 8 | Count | uint64_le | Number of records |
-| 16 | 4 | MetadataLen | uint32_le | Metadata length, at most 65,536 |
-| 20 | MetadataLen | Metadata | bytes | Application-defined, not interpreted |
+| 16 | 8 | RecordsHash | uint64_le | xxHash64 of the records |
+| 24 | 8 | HeaderHash | uint64_le | xxHash64 of the rest of the header |
+| 32 | 4 | MetadataLen | uint32_le | Metadata length, at most 65,536 |
+| 36 | MetadataLen | Metadata | bytes | Application-defined, not interpreted |
 
-Zero bytes pad the header to `RecordsOffset = ceil((20 + MetadataLen) / 4096) × 4096`, so the records start at a 4096-aligned offset, as direct reads (`O_DIRECT`) need.
+Zero bytes pad the header to `RecordsOffset = ceil((36 + MetadataLen) / 4096) × 4096`, so the records start at a 4096-aligned offset, as direct reads (`O_DIRECT`) need.
+
+**Hashes.** Both are canonical unseeded xxHash64:
+
+```
+RecordsHash = xxHash64(file[RecordsOffset : RecordsOffset + Count × (16 + PayloadSize)])
+HeaderHash  = xxHash64(file[0:24] || file[32 : 36 + MetadataLen])
+```
+
+`HeaderHash` covers every header byte but its own, `RecordsHash` and `Count` included, so a header that passes pins the records. The padding is not covered, and no reader interprets it.
 
 **Records.** Record `i` is at `RecordsOffset + i × (16 + PayloadSize)`:
 
@@ -449,7 +479,7 @@ Zero bytes pad the header to `RecordsOffset = ceil((20 + MetadataLen) / 4096) ×
 
 `Key` is the first 16 bytes of the key the index uses (§2.1). Records are in non-decreasing bytewise order of `Key`, which is the order of big-endian bytes 0–7, then big-endian bytes 8–15. `fastRange32` is monotonic in the prefix (§2.2), so this is also non-decreasing block order, the order sorted mode needs (§6.1). A key may repeat; an index build rejects it as a duplicate (§7.1).
 
-**Validation.** A file's size must be exactly `RecordsOffset + Count × (16 + PayloadSize)`. A reader checks this by dividing the size, never by multiplying `Count`, so a corrupt `Count` cannot overflow the arithmetic and pass. The writer writes `Count` after the records, then syncs. §7.5 lists the errors.
+**Validation.** A file's size must be exactly `RecordsOffset + Count × (16 + PayloadSize)`. A reader checks this by dividing the size, never by multiplying `Count`, so a corrupt `Count` cannot overflow the arithmetic and pass. The writer syncs the records, then writes `Count`, `RecordsHash` and `HeaderHash` and syncs again; until then both hashes are zero. A file with no records must have the hash of no records, so a file whose writer did not finish is not valid. §7.5 lists the errors.
 
 **Building an index from sorted files.** `BuildFromSortedFiles` builds an index from any number of sorted files that share a payload size, without merging them. The index is byte-identical to the one a `SortedBuilder` builds from the same keys in block order (§6.1), because the order of the keys inside a block does not change the index. The build splits the blocks into **stripes** of `B` consecutive blocks holding about `S` keys each, with `S` between 32K and 256K, chosen so the stripes in flight fit in 128 MiB. Stripe `s` covers blocks `[s·B, (s+1)·B)` and so, by §2.2, the prefixes `[ceil(s·B·2^64 / numBlocks), ceil((s+1)·B·2^64 / numBlocks))`; the last stripe has no upper bound. Every file is in key order, so it holds a stripe's keys as one contiguous run. One goroutine gathers each stripe in turn: in each file it finds where the run ends, with a galloping search, and copies the run out. The files are read once, sequentially and directly where the filesystem allows it, through fixed aligned buffers, two or three per file. Each buffer is its share of 128 MiB, kept between 64 KiB and 4 MiB, then rounded down to a multiple of lcm(4096, record size), and never less than one: 36 KiB to 92 KiB at the 64 KiB floor, depending on the record size. Past about 700 files those floors take more than the 128 MiB, up to 192 KiB per file. Each worker (`WithWorkers`) takes whole stripes: it sorts a stripe's records by block with a counting sort, solves the blocks, and hands them to the writer of §6.3, which commits them in block order. With one worker, the calling goroutine gathers, solves and writes each stripe itself. While sorting, a worker checks that each file's run is in order and that every record's block is in the stripe; a record that fails either check means a file out of order (`ErrUnsortedInput`). A duplicate key fails its block (`ErrDuplicateKey`), and the build fails if the records it read do not add up to the headers' counts (`ErrKeyCountMismatch`).
 
@@ -863,7 +893,7 @@ StreamHash targets large datasets (N > ~100K). For smaller sets, fixed costs (he
 
 **Maximum:** `2^40 − 1` keys (~1.1 trillion), set by the 40-bit RAM-index fields. The sentinel entry stores `KeysBefore == TotalKeys`, so exactly `2^40` would wrap to 0 and is rejected. The 40-bit `MetadataOffset` likewise supports metadata regions up to ~1.1 TB.
 
-The resident RAM index is ≈ 10 bytes × numBlocks (≈ 3.3 MB per billion keys for Bijection, ≈ 0.3 MB per billion for PTRHash). At the `2^40 − 1` maximum this is ~3.6 GB (Bijection, ~358M blocks) or ~348 MB (PTRHash, ~34.8M blocks).
+The resident RAM index is ≈ 14 bytes × numBlocks (≈ 4.6 MB per billion keys for Bijection, ≈ 0.4 MB per billion for PTRHash). At the `2^40 − 1` maximum this is ~5.0 GB (Bijection, ~358M blocks) or ~487 MB (PTRHash, ~34.8M blocks).
 
 ### 7.4. PTRHash build-failure frequency
 
@@ -893,6 +923,7 @@ Error names are from the reference implementation; other implementations may dif
 | `ErrDuplicateKey` | Bijection: identical `k0` and `k1`. PTRHash: two keys in a bucket share `k0 ^ k1` (§7.1) |
 | `ErrPayloadTooLarge` | PayloadSize > 8 |
 | `ErrFingerprintTooLarge` | FingerprintSize > 4 |
+| `ErrMetadataTooLarge` | UserMetadata > 64 KiB |
 | `ErrPayloadOverflow` | payload value exceeds PayloadSize capacity |
 | `ErrKeyCountMismatch` | declared `totalKeys` ≠ keys added |
 | `ErrTooManyKeys` | key count exceeds `2^40 − 1` |
@@ -907,10 +938,10 @@ An index with `N = 0` keys is not an error: it builds successfully, and every `Q
 | Error | Condition |
 |-------|-----------|
 | `ErrInvalidMagic` | magic ≠ `0x53544D48` |
-| `ErrInvalidVersion` | version ≠ `0x0001` |
+| `ErrInvalidVersion` | version ≠ `0x0002` |
 | `ErrTruncatedFile` | file shorter than the layout requires |
 | `ErrCorruptedIndex` | invalid metadata or out-of-bounds offset |
-| `ErrChecksumFailed` | footer hash mismatch (from `Verify`) |
+| `ErrChecksumFailed` | any checksum mismatch (§7.6) |
 | `ErrNotFound` | empty block, or fingerprint mismatch |
 
 **Sorted files (§3.9):**
@@ -920,8 +951,9 @@ An index with `N = 0` keys is not an error: it builds successfully, and every `Q
 | `ErrTruncatedFile` | file shorter than its header, or than its `Count` records |
 | `ErrKeyCountMismatch` | file longer than its header and `Count` records; or a build read a different number of records than the files count |
 | `ErrInvalidMagic` | magic ≠ `0x53545346` |
-| `ErrInvalidVersion` | version ≠ `0x0001` |
+| `ErrInvalidVersion` | version ≠ `0x0002` |
 | `ErrCorruptedIndex` | PayloadSize > 8, or MetadataLen > 65,536 |
+| `ErrChecksumFailed` | HeaderHash mismatch whenever the header is read; RecordsHash mismatch once every record is read, or when the header is read for a file with no records (§7.6) |
 | `ErrUnsortedInput` | a key sorts before the key before it, when it is written, merged, read or built from; or a build finds a record outside its stripe |
 
 ### 7.6. Integrity and corruption safety
@@ -934,7 +966,23 @@ if metadataStart >= metadataRegionOffset + metadataRegionSize:
     return ErrCorruptedIndex
 ```
 
-For end-to-end integrity, the footer's two unseeded-xxHash64 region hashes (§3.7) can be verified after open (the reference implementation exposes this as `Verify`, returning `ErrChecksumFailed` on mismatch). **`Verify` covers only the payload and metadata regions, not the header or RAM index** — detecting tampering there requires a checksum stored **outside** the file (e.g. a manifest), since any in-file checksum would itself be part of what needs protecting.
+Checksums cover every byte of an index file, and every byte of a sorted file but its padding. Each is checked where its bytes are read anyway, and a mismatch is `ErrChecksumFailed`:
+
+| Bytes | Checksum | Checked |
+|-------|----------|---------|
+| Index header, UserMetadata, AlgoConfig | `HeaderHash` (§3.2) | at open, and by `Verify` |
+| RAM index | each entry's `Check` (§3.4) | by a query, for the two entries it reads, and by `Verify` |
+| Payload region | `PayloadRegionHash` (§3.7) | by `Verify` |
+| Metadata region | `MetadataRegionHash` (§3.7) | by `Verify` |
+| Footer | the hashes are their own check | by `Verify`, which also rejects non-zero reserved bytes (`ErrCorruptedIndex`) |
+| Sorted file header, metadata | `HeaderHash` (§3.9) | whenever the header is read |
+| Sorted file records | `RecordsHash` (§3.9) | once every record is read: by `SortedFileReader` at the last record, by `MergeSortedFiles` before it finishes its output, by `BuildFromSortedFiles` before it finishes the index. A file with no records: whenever the header is read |
+
+Both writers write the header last, after syncing the rest of the file, then sync again, so a header that passes its check means the whole file reached disk.
+
+Opening an index reads no page it did not read before, as long as the user metadata fits in the header's page; larger metadata is read in full to be hashed. A query reads nothing more, so it does not detect corruption in the block metadata or the payload entry it reads: that takes `Verify`, which reads the whole file.
+
+**The checksums catch corruption, not tampering.** They use no secret, so anyone who can write the file can recompute them. Detecting tampering requires a keyed or cryptographic checksum stored **outside** the file (e.g. a manifest).
 
 ### 7.7. Security considerations
 
@@ -957,7 +1005,7 @@ StreamHash assumes uniformly random input. Consequences of violating that:
 ### 7.8. Durability and compatibility
 
 - **Failed builds leave no usable index.** If `Finish` fails, the partial output file is deleted, so a crashed or errored build never leaves behind a file that looks like a valid index.
-- **Single format version.** The format is Version `0x0001`; a reader rejects any other version with `ErrInvalidVersion`. There is no forward- or backward-compatibility guarantee across format versions yet.
+- **Single format version.** The format is Version `0x0002`, for index files and sorted files alike; a reader rejects any other version with `ErrInvalidVersion`. There is no forward- or backward-compatibility guarantee across format versions yet.
 
 ---
 
@@ -990,9 +1038,9 @@ A collision surfaces as `ErrDuplicateKey` at build time — a clean failure, nev
 | lambda | bits/key | Fallback rate | Split rate | |
 |--------|----------|---------------|------------|---|
 | 2.0 | ~2.8 | <0.01% | ~1% | conservative |
-| 3.0 | ~2.46 | ~0.01% | ~1.2% | **default** |
-| 3.6 | ~2.40 | ~0.02% | ~3% | |
-| 5.0 | ~2.30 | ~0.3% | ~7% | aggressive |
+| 3.0 | ~2.47 | ~0.01% | ~1.2% | **default** |
+| 3.6 | ~2.41 | ~0.02% | ~3% | |
+| 5.0 | ~2.31 | ~0.3% | ~7% | aggressive |
 
 **PTRHash** — `lambda = 3.16`, `alpha = 0.99` (~1% spare slots, absorbed by the remap table).
 
@@ -1007,8 +1055,8 @@ A collision surfaces as `ErrDuplicateKey` at build time — a clean failure, nev
 | Seed stream (split, sizes 8+) | ~0.12 |
 | Checkpoints (28 B/block) | ~0.07 |
 | Fallback list | ~0.01 |
-| RAM index (10 B/block) | ~0.03 |
-| **Total** | **~2.46** |
+| RAM index (14 B/block) | ~0.04 |
+| **Total** | **~2.47** |
 
 *PTRHash* (bucketsPerBlock 10,000, lambda 3.16, alpha 0.99):
 
@@ -1016,10 +1064,10 @@ A collision surfaces as `ErrDuplicateKey` at build time — a clean failure, nev
 |-----------|----------|
 | Pilots (1 B × 10,000 / block) | ~2.53 |
 | Remap table (~1% overflow) | ~0.16 |
-| RAM index (10 B/block) | ~0.003 |
+| RAM index (14 B/block) | ~0.004 |
 | **Total** | **~2.70** |
 
-With payloads/fingerprints, total bits/key ≈ `routing_overhead + 8 × (PayloadSize + FingerprintSize)`, where `routing_overhead` is the MPHF figure above (~2.46 Bijection, ~2.70 PTRHash). For example, a 4-byte payload + 1-byte fingerprint on Bijection is ≈ `2.46 + 40 = ~42.5` bits/key.
+With payloads/fingerprints, total bits/key ≈ `routing_overhead + 8 × (PayloadSize + FingerprintSize)`, where `routing_overhead` is the MPHF figure above (~2.47 Bijection, ~2.70 PTRHash). For example, a 4-byte payload + 1-byte fingerprint on Bijection is ≈ `2.47 + 40 = ~42.5` bits/key.
 
 ### 8.3. Glossary
 

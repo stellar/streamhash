@@ -74,7 +74,7 @@ func WithGlobalSeed(seed uint64) BuildOption {
 	}
 }
 
-// WithMetadata sets the variable-length user metadata.
+// WithMetadata sets the variable-length user metadata, at most 64 KiB.
 // The metadata is copied, so the caller can reuse the slice after this call.
 func WithMetadata(data []byte) BuildOption {
 	return func(c *buildConfig) {

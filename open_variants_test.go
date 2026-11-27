@@ -197,7 +197,11 @@ func TestMaxBlockKeys(t *testing.T) {
 	// checked against adjacent cumulative counts in the RAM index (the
 	// sentinel entry at NumBlocks makes the last block's count defined).
 	for i := uint32(0); i < idx.NumBlocks(); i++ {
-		occ := idx.ramEntry(i+1).KeysBefore - idx.ramEntry(i).KeysBefore
+		e, next, ok := idx.blockRAMEntries(i)
+		if !ok {
+			t.Fatalf("block %d: its RAM index entries fail their checks", i)
+		}
+		occ := next.KeysBefore - e.KeysBefore
 		if occ > uint64(idx.MaxBlockKeys()) {
 			t.Fatalf("block %d holds %d keys, above the reported ceiling %d", i, occ, idx.MaxBlockKeys())
 		}

@@ -19,8 +19,8 @@ import (
 
 const (
 	// minFileSize is a conservative lower bound for valid index files.
-	// Derived from: headerSize(64) + variableSections(8 min) + ramIndex(30 min for 2 blocks + sentinel)
-	// + footerSize(32) = 134 bytes minimum structure. 304 adds margin for metadata region.
+	// Derived from: headerSize(64) + variableSections(8 min) + ramIndex(42 min for 2 blocks + sentinel)
+	// + footerSize(32) = 146 bytes minimum structure. 304 adds margin for metadata region.
 	minFileSize = 304
 )
 
@@ -46,7 +46,7 @@ type Index struct {
 	userMetadata []byte
 
 	// RAM index — entries are decoded on demand from this mmap-backed
-	// byte view via ramEntry(). Keeping it as []byte avoids the
+	// byte view via checkedRAMEntry(). Keeping it as []byte avoids the
 	// per-Open allocation + decode loop a Go-heap []ramIndexEntry
 	// would require, which scales linearly with NumBlocks.
 	ramIndexBytes []byte
@@ -138,7 +138,7 @@ func OpenBytes(data []byte) (*Index, error) {
 // initFromData parses the header and locates the variable-length
 // sections and RAM index inside idx.data. Open() only touches the
 // contiguous prefix (header + variable sections + RAM-index span);
-// individual RAM index entries are decoded on demand via ramEntry(),
+// individual RAM index entries are decoded on demand via checkedRAMEntry(),
 // and footer decoding is deferred to Verify().
 func (idx *Index) initFromData() error {
 	fileSize := uint64(len(idx.data))
@@ -160,6 +160,9 @@ func (idx *Index) initFromData() error {
 	}
 	userMetadataLen := binary.LittleEndian.Uint32(idx.data[offset:])
 	offset += 4
+	if userMetadataLen > maxVariableSectionLen {
+		return sherr.ErrCorruptedIndex
+	}
 	if offset+uint64(userMetadataLen) > fileSize {
 		return sherr.ErrTruncatedFile
 	}
@@ -172,11 +175,18 @@ func (idx *Index) initFromData() error {
 	}
 	algoConfigLen := binary.LittleEndian.Uint32(idx.data[offset:])
 	offset += 4
+	if algoConfigLen > maxVariableSectionLen {
+		return sherr.ErrCorruptedIndex
+	}
 	if offset+uint64(algoConfigLen) > fileSize {
 		return sherr.ErrTruncatedFile
 	}
 	algoConfig := idx.data[offset : offset+uint64(algoConfigLen)]
 	offset += uint64(algoConfigLen)
+
+	if headerHash(idx.data[:offset]) != hdr.HeaderHash {
+		return fmt.Errorf("%w: header", sherr.ErrChecksumFailed)
+	}
 
 	// Calculate RAM index position (after variable sections)
 	idx.numRAMEntries = hdr.NumBlocks + 1 // includes sentinel
@@ -189,7 +199,7 @@ func (idx *Index) initFromData() error {
 		return sherr.ErrCorruptedIndex
 	}
 
-	// RAM index — keep the mmap'd region as a byte view; ramEntry()
+	// RAM index — keep the mmap'd region as a byte view; checkedRAMEntry()
 	// decodes individual entries on demand. See the field doc on Index.
 	idx.ramIndexBytes = idx.data[ramIndexStart:ramIndexEnd]
 
@@ -210,14 +220,19 @@ func (idx *Index) initFromData() error {
 	return nil
 }
 
-// ramEntry decodes RAM index entry i from the mmap'd byte view.
-// decodeRAMIndexEntry reads exactly ramIndexEntrySize bytes from the
-// start of the slice and does a per-byte little-endian unpack, so the
-// open-ended slice expression is safe and incurs only one bounds
-// check (avoiding the 3-index form keeps this method small enough to
-// inline alongside the inlined decoder).
-func (idx *Index) ramEntry(i uint32) ramIndexEntry {
-	return decodeRAMIndexEntry(idx.ramIndexBytes[uint64(i)*ramIndexEntrySize:])
+// checkedRAMEntry decodes RAM index entry i from the mmap'd byte view, and
+// reports whether its check matches.
+func (idx *Index) checkedRAMEntry(i uint32) (ramIndexEntry, bool) {
+	b := idx.ramIndexBytes[uint64(i)*ramIndexEntrySize:][:ramIndexEntrySize]
+	return decodeRAMIndexEntry(b), ramIndexEntryCheck(i, b) == binary.LittleEndian.Uint32(b[ramIndexEntryDataSize:])
+}
+
+// blockRAMEntries returns block i's entry and the next, which a lookup reads
+// together, and reports whether both their checks match.
+func (idx *Index) blockRAMEntries(i uint32) (entry, next ramIndexEntry, ok bool) {
+	entry, ok = idx.checkedRAMEntry(i)
+	next, nextOK := idx.checkedRAMEntry(i + 1)
+	return entry, next, ok && nextOK
 }
 
 // payloadMapping is the page-aligned part of the payload region, or nil for
@@ -249,7 +264,8 @@ func (idx *Index) Close() error {
 
 // QueryRank returns the rank (0-based index) for a key.
 // This is the core MPHF operation.
-// Returns ErrKeyTooShort if key is less than 16 bytes.
+// Returns ErrKeyTooShort if key is less than 16 bytes, and ErrChecksumFailed if
+// a RAM index entry it reads fails its check.
 func (idx *Index) QueryRank(key []byte) (uint64, error) {
 	if idx.closed.Load() {
 		return 0, sherr.ErrIndexClosed
@@ -322,9 +338,9 @@ func (idx *Index) prefetch(keys [][]byte, advise func(start, end uint64)) {
 	// reading them.
 	ranges = ranges[:0]
 	for _, b := range blocks {
-		e, next := idx.ramEntry(b), idx.ramEntry(b+1)
+		e, next, ok := idx.blockRAMEntries(b)
 		start, end := idx.metadataRegionOffset+e.MetadataOffset, idx.metadataRegionOffset+next.MetadataOffset
-		if e.KeysBefore < next.KeysBefore && start < end && end <= uint64(len(idx.data)) {
+		if ok && e.KeysBefore < next.KeysBefore && start < end && end <= uint64(len(idx.data)) {
 			ranges = append(ranges, byteRange{start, end})
 		}
 	}
@@ -368,6 +384,9 @@ func willNeed(ranges []byteRange, advise func(start, end uint64)) {
 	}
 }
 
+// errRAMIndexChecksum is preallocated: lookups return it.
+var errRAMIndexChecksum = fmt.Errorf("%w: RAM index entry", sherr.ErrChecksumFailed)
+
 // verifyFingerprintSeparated checks if the fingerprint matches.
 // Reads from the separated payload region.
 // Always uses extractFingerprint(k0, k1, fpSize) for both build and query.
@@ -410,9 +429,11 @@ func (idx *Index) lookup(key []byte, checkFingerprint bool) (uint64, error) {
 	}
 
 	// Step 2: Get block info from RAM index (on-demand decode from
-	// mmap'd bytes — see ramEntry).
-	entry := idx.ramEntry(blockIdx)
-	nextEntry := idx.ramEntry(blockIdx + 1)
+	// mmap'd bytes — see checkedRAMEntry).
+	entry, nextEntry, ok := idx.blockRAMEntries(blockIdx)
+	if !ok {
+		return 0, errRAMIndexChecksum
+	}
 	baseRank := entry.KeysBefore
 
 	// KeysBefore is read raw from the (untrusted) RAM index and must be
@@ -522,7 +543,8 @@ func (idx *Index) WithPayload() (*PayloadIndex, error) {
 }
 
 // QueryPayload returns the rank and payload for a key.
-// Returns ErrKeyTooShort if key is less than 16 bytes.
+// Returns ErrKeyTooShort if key is less than 16 bytes, and ErrChecksumFailed if
+// a RAM index entry it reads fails its check.
 func (pi *PayloadIndex) QueryPayload(key []byte) (rank uint64, payload uint64, err error) {
 	if pi.closed.Load() {
 		return 0, 0, sherr.ErrIndexClosed
@@ -626,10 +648,12 @@ func (idx *Index) Stats() *Stats {
 	}
 }
 
-// Verify checks the integrity of the entire index.
-// For separated layout, this verifies:
-// 1. PayloadRegionHash (hash-of-hashes: H(H(b0) || H(b1) || ...))
-// 2. MetadataRegionHash (streaming hash of metadata region)
+// Verify checks the integrity of the entire index, every byte of it:
+// 1. HeaderHash, as Open does
+// 2. The footer's reserved bytes, which must be zero (ErrCorruptedIndex)
+// 3. Each RAM index entry's check
+// 4. PayloadRegionHash (hash-of-hashes: H(H(b0) || H(b1) || ...))
+// 5. MetadataRegionHash (streaming hash of metadata region)
 //
 // The footer (last 32 bytes) is decoded on each Verify call rather than at Open time,
 // so Open() only touches the contiguous prefix and avoids a scattered page fault.
@@ -649,22 +673,40 @@ func (idx *Index) Verify() error {
 		defer adviseRandom(p)
 	}
 
+	// The bytes may have changed since they were opened.
+	if headerHash(idx.data[:idx.ramIndexOffset]) != binary.LittleEndian.Uint64(idx.data[headerHashOffset:]) {
+		return fmt.Errorf("%w: header", sherr.ErrChecksumFailed)
+	}
+
 	// Lazy footer decode — only touched by Verify, not Open.
 	fileSize := uint64(len(idx.data))
 	ft, err := decodeFooter(idx.data[fileSize-footerSize:])
 	if err != nil {
 		return err
 	}
+	if ft.Reserved != ([16]byte{}) {
+		return fmt.Errorf("%w: the footer's reserved bytes are not zero", sherr.ErrCorruptedIndex)
+	}
 
 	numBlocks := idx.header.NumBlocks
+
+	// A file of no blocks still has entry 0, its sentinel.
+	entry, ok := idx.checkedRAMEntry(0)
+	if !ok {
+		return errRAMIndexChecksum
+	}
 
 	// Verify payload region hash using hash-of-hashes
 	// This matches the build-time computation: fold per-block hashes in order
 	payloadHasher := xxhash.New()
 	for blockID := range numBlocks {
 		// Get this block's payload range from RAM index
-		startKey := idx.ramEntry(blockID).KeysBefore
-		endKey := idx.ramEntry(blockID + 1).KeysBefore
+		next, ok := idx.checkedRAMEntry(blockID + 1)
+		if !ok {
+			return errRAMIndexChecksum
+		}
+		startKey, endKey := entry.KeysBefore, next.KeysBefore
+		entry = next
 		if startKey > endKey {
 			return sherr.ErrCorruptedIndex
 		}
@@ -694,7 +736,7 @@ func (idx *Index) Verify() error {
 	}
 
 	if payloadHasher.Sum64() != ft.PayloadRegionHash {
-		return sherr.ErrChecksumFailed
+		return fmt.Errorf("%w: payload region", sherr.ErrChecksumFailed)
 	}
 
 	// Verify metadata region hash (streaming hash of entire region)
@@ -702,13 +744,8 @@ func (idx *Index) Verify() error {
 	if footerOffset < idx.metadataRegionOffset {
 		return sherr.ErrCorruptedIndex
 	}
-	metadataRegionSize := footerOffset - idx.metadataRegionOffset
-	if metadataRegionSize > 0 {
-		metadataRegion := idx.data[idx.metadataRegionOffset:footerOffset]
-		actualMetaHash := xxhash.Sum64(metadataRegion)
-		if actualMetaHash != ft.MetadataRegionHash {
-			return sherr.ErrChecksumFailed
-		}
+	if xxhash.Sum64(idx.data[idx.metadataRegionOffset:footerOffset]) != ft.MetadataRegionHash {
+		return fmt.Errorf("%w: metadata region", sherr.ErrChecksumFailed)
 	}
 
 	return nil

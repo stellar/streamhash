@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/cespare/xxhash/v2"
 	intbits "github.com/stellar/streamhash/internal/bits"
 )
 
@@ -42,7 +43,8 @@ const (
 //
 // The files are not merged. Each is checked, then read once, sequentially and
 // directly where the filesystem allows it. A file whose keys are out of order
-// fails the build, and so does a duplicate key.
+// fails the build, and so does a duplicate key, or a file whose records do
+// not match its hash (ErrChecksumFailed).
 //
 // Speed: about 6M keys/s per worker (WithWorkers), up to what the disk reads
 // at 16+PayloadSize bytes per key. Memory: about 256 MiB, plus each worker's
@@ -145,7 +147,7 @@ func (g *sortedBuild) start(ctx context.Context, runs []sortedRun) error {
 		if err != nil {
 			return err
 		}
-		r := &fileReader{run: run, f: f, reqs: g.reqs, next: run.start, valid: -1}
+		r := &fileReader{run: run, f: f, reqs: g.reqs, next: run.start, valid: -1, hash: xxhash.New()}
 		for range nbuf {
 			r.bufs = append(r.bufs, alignedBuffer(bufSize))
 			r.done = append(r.done, make(chan readResult, 1))
@@ -289,6 +291,8 @@ func (g *sortedBuild) gather(ctx context.Context, s int, st *stripe) error {
 				cut = firstAtOrPast(rest, recordSize, n, bound)
 			}
 			st.data = append(st.data, rest[:cut*recordSize]...)
+			// Only the gather sees a file's records in order.
+			_, _ = r.hash.Write(rest[:cut*recordSize])
 			r.pos += cut * recordSize
 			count += cut
 			if cut < n {
@@ -335,10 +339,16 @@ func firstAtOrPast(buf []byte, recordSize, n int, bound uint64) int {
 	return hi
 }
 
-// checkCount checks that the gathered records add up to the files' counts.
-func (g *sortedBuild) checkCount() error {
+// checkInputs checks that the gathered records add up to the files' counts,
+// and that each file's match its hash.
+func (g *sortedBuild) checkInputs() error {
 	if g.gathered != g.b.cfg.totalKeys {
 		return fmt.Errorf("%w: read %d records, the sorted files count %d", ErrKeyCountMismatch, g.gathered, g.b.cfg.totalKeys)
+	}
+	for _, r := range g.readers {
+		if err := r.run.check(r.hash.Sum64()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -353,7 +363,7 @@ func (g *sortedBuild) buildInline(ctx context.Context) error {
 			return errors.Join(err, b.cleanup())
 		}
 	}
-	if err := g.checkCount(); err != nil {
+	if err := g.checkInputs(); err != nil {
 		return errors.Join(err, b.cleanup())
 	}
 	return b.finalizeIndex()
@@ -420,7 +430,7 @@ func (g *sortedBuild) gatherAll(ctx context.Context, stripes chan<- *stripe, fre
 		}
 		stripes <- st // never blocks: inFlight stripes exist and stripes holds inFlight
 	}
-	return g.checkCount()
+	return g.checkInputs()
 }
 
 // runStripeWorker routes and solves stripes until stripes closes or the
@@ -536,6 +546,7 @@ type fileReader struct {
 	reqs  chan<- readRequest
 	bufs  [][]byte
 	done  []chan readResult // each buffer's read result; never full
+	hash  *xxhash.Digest    // of the records gathered
 	next  int64             // the file offset of the next read to post
 	cur   int               // the buffer being consumed
 	pos   int               // bytes of bufs[cur] consumed
